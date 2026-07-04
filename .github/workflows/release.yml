@@ -1,0 +1,74 @@
+name: Release
+
+# Build the `shirabe` binary (and, with `foreign-engine`, the FFI wrapper) for
+# Linux / macOS / Windows and attach them to the GitHub Release created by the
+# pushed tag. Vendor engine libraries for Firefox / Servo are published the
+# same way under their own release tags (libshirabe_engine_firefox_* etc.).
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest,  target: x86_64-unknown-linux-gnu,  archive: shirabe-x86_64-linux.tar.gz }
+          - { os: macos-latest,   target: aarch64-apple-darwin,      archive: shirabe-aarch64-macos.tar.gz }
+          - { os: windows-latest, target: x86_64-pc-windows-msvc,    archive: shirabe-x86_64-windows.zip }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+
+      # Offline-friendly: do not pull Chrome for Testing during a release build.
+      - name: Build (release)
+        env:
+          SHIRABE_SKIP_BROWSER_FETCH: "1"
+        run: cargo build --release --locked --features foreign-engine --target ${{ matrix.target }}
+
+      - name: Stage (unix)
+        if: runner.os != 'Windows'
+        run: |
+          mkdir -p stage/shirabe
+          cp target/${{ matrix.target }}/release/shirabe stage/shirabe/
+          cp README.md LICENSE stage/shirabe/
+          tar -czf ${{ matrix.archive }} -C stage shirabe
+      - name: Stage (windows)
+        if: runner.os == 'Windows'
+        run: |
+          mkdir stage\shirabe
+          copy target\${{ matrix.target }}\release\shirabe.exe stage\shirabe\
+          copy README.md stage\shirabe\
+          copy LICENSE stage\shirabe\
+          7z a ${{ matrix.archive }} stage\shirabe
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.archive }}
+          path: ${{ matrix.archive }}
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Attach to release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true
