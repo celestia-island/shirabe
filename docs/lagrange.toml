@@ -1,0 +1,7 @@
+[site]
+title = "Shirabe"
+description = "Lightweight headless browser automation — CDP engine + HTTP debug API"
+
+[languages]
+default = "en"
+order = ["en", "zhs", "zht", "ja", "ko", "fr", "es", "ru", "ar"]
