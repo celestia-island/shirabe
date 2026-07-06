@@ -6,7 +6,7 @@
 
 <div align="center">
 
-[![License: SySL-1.0](https://img.shields.io/badge/License-SySL--1.0-blue.svg)](../../LICENSE)
+[![License: SySL-1.0](https://img.shields.io/badge/License-SySL--1.0-blue.svg)](https://sysl.celestia.world)
 [![Checks](https://img.shields.io/github/actions/workflow/status/celestia-island/shirabe/checks.yml)](https://github.com/celestia-island/shirabe/actions/workflows/checks.yml)
 [![Docs](https://img.shields.io/badge/docs-shirabe.docs.celestia.world-blue)](https://shirabe.docs.celestia.world)
 
@@ -160,4 +160,4 @@ SHIRABE_SKIP_BROWSER_FETCH=1 cargo test --all-features
 
 ## الترخيص
 
-SySL-1.0 (رخصة المصدر الاصطناعي). راجع [LICENSE](../../LICENSE).
+SySL-1.0 (رخصة المصدر الاصطناعي). راجع [LICENSE](https://sysl.celestia.world).
