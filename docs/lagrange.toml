@@ -2,6 +2,7 @@
 title = "Shirabe"
 description = "Lightweight headless browser automation — CDP engine + HTTP debug API"
 
+cname = "shirabe.docs.celestia.world"
 [languages]
 default = "en"
 order = ["en", "zhs", "zht", "ja", "ko", "fr", "es", "ru", "ar"]
