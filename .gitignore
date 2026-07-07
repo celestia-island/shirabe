@@ -1,2 +1,10 @@
-target/
+/target
 /Cargo.lock
+*.swp
+*.swo
+*~
+.DS_Store
+__pycache__/
+*.pyc
+# No in-repo image assets; res/ is only ever written by sibling crates' tests.
+/res

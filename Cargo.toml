@@ -11,6 +11,9 @@ repository = "https://github.com/celestia-island/shirabe"
 keywords = ["browser", "cdp", "chrome", "headless", "automation"]
 categories = ["web-programming", "api-bindings", "development-tools"]
 
+[package.metadata.docs.rs]
+all-features = true
+
 [lib]
 name = "shirabe"
 path = "src/lib.rs"
