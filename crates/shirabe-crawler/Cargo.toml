@@ -1,0 +1,38 @@
+[package]
+name = "shirabe-crawler"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+authors = ["YRQ"]
+license-file = "LICENSE"
+description = "A standard crawling orchestration layer that drives shirabe's headless browser over its HTTP debug API."
+repository = "https://github.com/celestia-island/shirabe"
+keywords = ["crawler", "scraper", "shirabe", "automation", "spider"]
+categories = ["web-programming", "asynchronous"]
+
+[lib]
+name = "shirabe_crawler"
+path = "src/lib.rs"
+
+[features]
+default = ["shirabe-driver"]
+# Drive shirabe's own debug API (the canonical backend). When off, only the
+# `mock` driver and the core orchestration layer compile, which keeps the unit
+# tests free of any network or browser dependency.
+shirabe-driver = ["dep:reqwest"]
+
+[dependencies]
+tokio = { version = "^1", features = ["rt-multi-thread", "macros", "time", "sync", "fs", "io-util"] }
+serde = { version = "^1", features = ["derive"] }
+serde_json = "^1"
+futures = "^0.3"
+anyhow = "^1"
+thiserror = "^2"
+url = "^2"
+tracing = "^0.1"
+async-trait = "^0.1"
+# Only pulled in for the shirabe HTTP driver; the core stays network-free.
+reqwest = { version = "^0.13", features = ["json", "rustls-no-provider"], default-features = false, optional = true }
+
+[dev-dependencies]
+tokio = { version = "^1", features = ["rt-multi-thread", "macros", "time", "sync", "test-util"] }

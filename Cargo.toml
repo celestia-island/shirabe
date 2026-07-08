@@ -66,3 +66,10 @@ reqwest = { version = "^0.13", features = ["blocking", "rustls-no-provider"], de
 rustls = { version = "^0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
 sha2 = "^0.10"
 zip = "^2"
+
+# shirabe is also the root of a small workspace. The crawler crate is a
+# *consumer* of shirabe's public API only (it drives the browser over the HTTP
+# debug API), so adding it here changes nothing about how shirabe itself builds.
+[workspace]
+members = ["crates/shirabe-crawler"]
+resolver = "2"

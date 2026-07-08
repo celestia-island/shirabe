@@ -10,3 +10,4 @@
 - [Backends & Resolution](./guides/backends.md)
 - [Foreign Engines (Firefox / Servo)](./guides/foreign-engines.md)
 - [Bundling Native Libraries](./guides/bundling.md)
+- [Crawling orchestration (shirabe-crawler)](./guides/crawler.md)
