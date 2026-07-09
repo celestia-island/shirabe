@@ -60,6 +60,23 @@ curl -X POST http://localhost:3001/navigate \
 curl -X POST http://localhost:3001/screenshot -d '{}'
 ```
 
+### npx (no Rust toolchain required)
+
+Prebuilt binaries are published to npm, so you can run `shirabe` with a single
+command — no `cargo build`, no Chrome install:
+
+```bash
+npx @celestia-island/shirabe debug --port 3001
+```
+
+The `@celestia-island/shirabe` root package pulls the right platform
+subpackage (`-linux-x64` / `-darwin-arm64` / `-win32-x64`) automatically via
+`optionalDependencies` + a postinstall selector. To pin a version:
+
+```bash
+npx @celestia-island/shirabe@0.1.0 debug --port 3001
+```
+
 ### Library
 
 ```rust
@@ -155,6 +172,37 @@ print!("{}", render_bundle_report(&report));
 | `POST` | `/batch` | Batch operations |
 
 …plus console, network and websocket capture endpoints for full control.
+
+## MCP server
+
+Build shirabe with the `mcp` feature and run the stdio server — it hosts the
+headless-browser debug API **in-process** (no separate `shirabe debug` daemon
+to launch) and exposes its operations to AI coding assistants over the Model
+Context Protocol:
+
+```bash
+shirabe mcp
+```
+
+The server advertises twelve tools — `browser_navigate`, `browser_navigate_back`,
+`browser_navigate_forward`, `browser_snapshot`, `browser_dom`, `browser_screenshot`,
+`browser_click`, `browser_type`, `browser_press_key`, `browser_evaluate`,
+`browser_console_messages`, `browser_resize` — each proxying over loopback to
+the in-process CDP engine. One process is both the browser and the MCP server;
+when it exits, Chrome is killed. Wire it into an MCP client:
+
+```json
+{
+  "mcpServers": {
+    "shirabe": { "command": "shirabe", "args": ["mcp"] }
+  }
+}
+```
+
+Set `SHIRABE_URL` to change the page the browser opens on startup (default
+`about:blank`) and `SHIRABE_DOWNLOAD_PROXY` to route Chrome's traffic through a
+proxy. The browser backend, mirror, and fetch knobs from the library all still
+apply.
 
 ## Development
 

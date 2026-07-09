@@ -1,6 +1,14 @@
 # shirabe — browser automation via CDP.
 
 set shell := ["bash", "-c"]
+# On Windows just resolves recipe shebangs through the shell named here; without
+# it just falls back to `cygpath`, which Git for Windows does not put on PATH,
+# so every shebang recipe fails with "could not find cygpath executable".
+set windows-shell := ["bash.exe", "-c"]
+# `set lists` enables which() (used by the imported celestia-devtools.just);
+# `set unstable` gates it.
+set unstable
+set lists
 
 import "./celestia-devtools.just"
 
@@ -36,3 +44,14 @@ ci:
     just fmt-check
     just clippy
     just test
+
+# ── npx distribution (local dry-run) ─────────────────────────────────────────
+#
+# These wrap the shared recipes from celestia-devtools.just with shirabe's
+# metadata. CI does the actual publish (see .github/workflows/npm-release.yml);
+# locally these only stage ./dist and run `npm pack --dry-run`.
+#
+#   just npm-dist-local                              # reassemble root from existing dist/
+#   just npm-dist-local 0.1.0 path/to/shirabe x86_64-unknown-linux-gnu
+npm-dist-local version='' binary='' target='':
+    SHIRABE_SKIP_BROWSER_FETCH=1 just npm-dist shirabe {{version}} {{binary}} {{target}}

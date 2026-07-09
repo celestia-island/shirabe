@@ -24,6 +24,10 @@ enum Command {
         #[arg(long)]
         proxy: Option<String>,
     },
+    /// Run the MCP (Model Context Protocol) server on stdio. Hosts the headless
+    /// browser in-process and exposes its automation tools to AI assistants.
+    #[cfg(feature = "mcp")]
+    Mcp,
 }
 
 #[tokio::main]
@@ -51,8 +55,20 @@ async fn main() -> anyhow::Result<()> {
 
             shirabe::start_debug_server(cfg, port).await?;
         }
+        #[cfg(feature = "mcp")]
+        Some(Command::Mcp) => {
+            shirabe::mcp::run().await?;
+        }
         None => {
-            eprintln!("Usage: shirabe debug --port 3001 [--proxy http://localhost:7890]");
+            #[cfg(feature = "mcp")]
+            {
+                eprintln!("Usage: shirabe debug --port 3001 [--proxy http://localhost:7890]");
+                eprintln!("       shirabe mcp");
+            }
+            #[cfg(not(feature = "mcp"))]
+            {
+                eprintln!("Usage: shirabe debug --port 3001 [--proxy http://localhost:7890]");
+            }
         }
     }
 

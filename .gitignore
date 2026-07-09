@@ -8,3 +8,5 @@ __pycache__/
 *.pyc
 # No in-repo image assets; res/ is only ever written by sibling crates' tests.
 /res
+
+dist/

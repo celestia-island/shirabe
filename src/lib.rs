@@ -32,6 +32,8 @@ pub mod bundle;
 pub mod engine;
 #[cfg(feature = "foreign-engine")]
 pub mod ffi;
+#[cfg(feature = "mcp")]
+pub mod mcp;
 pub mod resolver;
 
 pub use backend::{
