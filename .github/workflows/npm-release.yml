@@ -97,6 +97,13 @@ jobs:
             --repository "https://github.com/celestia-island/shirabe" \
             --homepage "https://github.com/celestia-island/shirabe"
 
+      - name: Upload staged subpackage
+        uses: actions/upload-artifact@v4
+        with:
+          name: subpackage-${{ matrix.suffix }}
+          path: dist/shirabe${{ matrix.suffix }}
+          retention-days: 7
+
       - name: Publish subpackage
         shell: bash
         env:
