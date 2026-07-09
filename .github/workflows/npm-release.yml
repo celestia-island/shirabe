@@ -27,6 +27,7 @@ on:
 
 permissions:
   contents: read
+  id-token: write
 
 jobs:
   build-subpackage:
@@ -99,13 +100,12 @@ jobs:
       - name: Publish subpackage
         shell: bash
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           sub="dist/shirabe${{ matrix.suffix }}"
           echo "::group::npm pack $sub"
           (cd "$sub" && npm pack --dry-run)
           echo "::endgroup::"
-          (cd "$sub" && npm publish --access public)
+          (cd "$sub" && npm publish --access public --provenance)
 
   publish-root:
     name: Publish root @celestia-island/shirabe to npm
@@ -159,9 +159,8 @@ jobs:
 
       - name: Publish root package
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           echo "::group::npm pack (root)"
           (cd dist && npm pack --dry-run)
           echo "::endgroup::"
-          (cd dist && npm publish --access public)
+          (cd dist && npm publish --access public --provenance)
