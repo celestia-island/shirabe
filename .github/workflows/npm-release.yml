@@ -76,6 +76,7 @@ jobs:
       # Offline-friendly: do not pull Chrome for Testing during a release build.
       # Build with the mcp feature so `shirabe mcp` ships in the binary.
       - name: Build (release)
+        env:
           SHIRABE_SKIP_BROWSER_FETCH: "1"
         run: cargo build --release --features mcp --target ${{ matrix.target }}
 
