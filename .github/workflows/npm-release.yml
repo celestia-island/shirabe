@@ -77,7 +77,7 @@ jobs:
       - name: Build (release)
         env:
           SHIRABE_SKIP_BROWSER_FETCH: "1"
-        run: cargo build --release --locked --features mcp --target ${{ matrix.target }}
+        run: cargo build --release --features mcp --target ${{ matrix.target }}
 
       # Stage the platform subpackage. We publish it from this same job (one
       # subpackage per platform, directly from the runner that built it).
