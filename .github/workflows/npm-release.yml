@@ -76,7 +76,6 @@ jobs:
       # Offline-friendly: do not pull Chrome for Testing during a release build.
       # Build with the mcp feature so `shirabe mcp` ships in the binary.
       - name: Build (release)
-        env:
           SHIRABE_SKIP_BROWSER_FETCH: "1"
         run: cargo build --release --features mcp --target ${{ matrix.target }}
 
@@ -106,7 +105,6 @@ jobs:
 
       - name: Publish subpackage
         shell: bash
-        env:
         run: |
           sub="dist/shirabe${{ matrix.suffix }}"
           echo "::group::npm pack $sub"
@@ -165,7 +163,6 @@ jobs:
             --homepage "https://github.com/celestia-island/shirabe"
 
       - name: Publish root package
-        env:
         run: |
           echo "::group::npm pack (root)"
           (cd dist && npm pack --dry-run)
