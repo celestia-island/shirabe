@@ -60,7 +60,7 @@ zip = { version = "^2", optional = true }
 # Releases). `libloading` dlopens that contract.
 libloading = { version = "^0.8", optional = true }
 # MCP (optional, for standalone MCP server)
-rmcp = { version = "^1", optional = true, features = ["server", "transport-io", "macros", "schemars"] }
+rmcp = { version = "^2", optional = true, features = ["server", "transport-io", "macros", "schemars"] }
 schemars = { version = "^1", optional = true, features = ["derive"] }
 
 [dev-dependencies]
