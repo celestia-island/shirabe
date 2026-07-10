@@ -38,7 +38,7 @@ mcp = ["dep:rmcp", "dep:schemars", "tokio/io-std"]
 tokio = { version = "^1", features = ["rt-multi-thread", "net", "process", "macros", "time", "sync"] }
 tokio-tungstenite = { version = "^0.27", features = ["rustls-tls-webpki-roots"] }
 axum = "^0.8"
-tower-http = { version = "^0.6", features = ["cors", "compression-gzip"] }
+tower-http = { version = "^0.7", features = ["cors", "compression-gzip"] }
 serde = { version = "^1", features = ["derive"] }
 serde_json = "^1"
 futures = "^0.3"
