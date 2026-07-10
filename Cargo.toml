@@ -54,7 +54,7 @@ reqwest = { version = "^0.13", features = ["json", "blocking", "rustls-no-provid
 rustls = { version = "^0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
 # Optional: runtime Chrome download (sha256 verify + zip extract)
 sha2 = { version = "^0.10", optional = true }
-zip = { version = "^2", optional = true }
+zip = { version = "^8", optional = true }
 # Optional: Firefox / Servo backends are driven through a C-ABI engine contract
 # shipped as a dynamic library (built by the browser vendors, published to
 # Releases). `libloading` dlopens that contract.
@@ -71,4 +71,4 @@ anyhow = "^1"
 reqwest = { version = "^0.13", features = ["blocking", "rustls-no-provider"], default-features = false }
 rustls = { version = "^0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
 sha2 = "^0.10"
-zip = "^2"
+zip = "^8"
