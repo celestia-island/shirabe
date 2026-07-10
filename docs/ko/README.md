@@ -152,6 +152,26 @@ print!("{}", render_bundle_report(&report));
 
 …이 외에도 콘솔, 네트워크, 웹소켓 캡처 엔드포인트를 통해 완전한 제어가 가능합니다.
 
+## MCP 서버
+
+`mcp` feature로 shirabe를 빌드하고 stdio 서버를 실행합니다——프로세스 내에서 헤드리스 브라우저 디버그 API를 호스트하고, 모델 컨텍스트 프로토콜을 통해 AI 코딩 어시스턴트에 노출합니다:
+
+```bash
+shirabe mcp
+```
+
+서버는 열두 가지 도구를 제공합니다——각 도구는 루프백을 통해 프로세스 내 CDP 엔진으로 프록시합니다.
+
+```json
+{
+  "mcpServers": {
+    "shirabe": { "command": "shirabe", "args": ["mcp"] }
+  }
+}
+```
+
+`SHIRABE_URL`과 `SHIRABE_DOWNLOAD_PROXY`도 설정 가능합니다.
+
 ## 개발
 
 ```bash

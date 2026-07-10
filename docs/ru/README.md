@@ -159,6 +159,26 @@ print!("{}", render_bundle_report(&report));
 
 …плюс конечные точки для захвата консоли, сети и websocket для полного контроля.
 
+## MCP-сервер
+
+Соберите shirabe с feature `mcp` и запустите stdio-сервер — он размещает API отладки headless-браузера в процессе и предоставляет его операции AI-ассистентам программиста по протоколу Model Context Protocol:
+
+```bash
+shirabe mcp
+```
+
+Сервер предоставляет двенадцать инструментов — каждый проксирует через loopback к внутри-процессному CDP-движку.
+
+```json
+{
+  "mcpServers": {
+    "shirabe": { "command": "shirabe", "args": ["mcp"] }
+  }
+}
+```
+
+Установите `SHIRABE_URL` и `SHIRABE_DOWNLOAD_PROXY` при необходимости.
+
 ## Разработка
 
 ```bash

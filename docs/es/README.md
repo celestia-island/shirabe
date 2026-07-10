@@ -161,6 +161,26 @@ print!("{}", render_bundle_report(&report));
 
 …más endpoints de consola, red y captura por websocket para un control total.
 
+## Servidor MCP
+
+Construye shirabe con la feature `mcp` y ejecuta el servidor stdio — aloja la API de depuracion del navegador headless en proceso y expone sus operaciones a los asistentes de codificacion de IA a traves del Model Context Protocol:
+
+```bash
+shirabe mcp
+```
+
+El servidor anuncia doce herramientas — cada una proxando sobre loopback al motor CDP en proceso.
+
+```json
+{
+  "mcpServers": {
+    "shirabe": { "command": "shirabe", "args": ["mcp"] }
+  }
+}
+```
+
+Establece `SHIRABE_URL` y `SHIRABE_DOWNLOAD_PROXY` segun sea necesario.
+
 ## Desarrollo
 
 ```bash

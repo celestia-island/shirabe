@@ -153,6 +153,26 @@ print!("{}", render_bundle_report(&report));
 
 …بالإضافة إلى نقاط نهاية console وnetwork وwebsocket للتحكم الكامل.
 
+## خادم MCP
+
+ابنِ shirabe بميزة `mcp` وشغّل خادم stdio — فهو يستضيف واجهة برمجة تصحيح المتصفح مقطوع الرأس داخل العملية ويعرض عملياته لمساعدي الترميز بالذكاء الاصطناعي عبر بروتوكول سياق النموذج:
+
+```bash
+shirabe mcp
+```
+
+يُعلن الخادم عن اثني عشر أداة — كل منها يُمرر عبر الاسترجاع إلى محرك CDP داخل العملية.
+
+```json
+{
+  "mcpServers": {
+    "shirabe": { "command": "shirabe", "args": ["mcp"] }
+  }
+}
+```
+
+عيّن `SHIRABE_URL` و`SHIRABE_DOWNLOAD_PROXY` حسب الحاجة.
+
 ## التطوير
 
 ```bash

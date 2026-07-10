@@ -150,6 +150,26 @@ print!("{}", render_bundle_report(&report));
 
 ……以及控制台、網路和 WebSocket 擷取端點，提供完整控制能力。
 
+## MCP 伺服器
+
+使用 `mcp` feature 建置 shirabe 並執行 stdio 伺服器——它在行程內託管無頭瀏覽器除錯 API（無需啟動單獨的 `shirabe debug` 常駐程式），並透過模型上下文協定（Model Context Protocol）將其操作暴露給 AI 編碼助手：
+
+```bash
+shirabe mcp
+```
+
+伺服器提供十二個工具——每個工具都透過環回代理到行程內 CDP 引擎。一個行程既是瀏覽器又是 MCP 伺服器；當它退出時，Chrome 會被終止。
+
+```json
+{
+  "mcpServers": {
+    "shirabe": { "command": "shirabe", "args": ["mcp"] }
+  }
+}
+```
+
+設定 `SHIRABE_URL` 來變更瀏覽器啟動時開啟的頁面（預設 `about:blank`），設定 `SHIRABE_DOWNLOAD_PROXY` 透過代理路由 Chrome 的流量。
+
 ## 開發
 
 ```bash

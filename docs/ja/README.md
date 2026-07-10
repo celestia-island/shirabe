@@ -155,6 +155,26 @@ print!("{}", render_bundle_report(&report));
 …さらに、完全な制御のためのコンソール、ネットワーク、WebSocket のキャプチャエンド
 ポイントも備えています。
 
+## MCP サーバー
+
+`mcp` feature を有効にして shirabe をビルドし、stdio サーバーを実行します——プロセス内でヘッドレスブラウザデバッグ API をホストし（別の `shirabe debug` デーモンは不要）、モデルコンテキストプロトコル経由で AI コーディングアシスタントに公開します：
+
+```bash
+shirabe mcp
+```
+
+サーバーは12のツールを提供します——各ツールはループバック経由でプロセス内 CDP エンジンにプロキシします。
+
+```json
+{
+  "mcpServers": {
+    "shirabe": { "command": "shirabe", "args": ["mcp"] }
+  }
+}
+```
+
+`SHIRABE_URL` と `SHIRABE_DOWNLOAD_PROXY` も設定可能です。
+
 ## 開発
 
 ```bash

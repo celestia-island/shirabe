@@ -150,6 +150,26 @@ print!("{}", render_bundle_report(&report));
 
 ……以及控制台、网络和 WebSocket 捕获端点，提供完整的控制能力。
 
+## MCP 服务器
+
+使用 `mcp` feature 构建 shirabe 并运行 stdio 服务器——它在进程内托管无头浏览器调试 API（无需启动单独的 `shirabe debug` 守护进程），并通过模型上下文协议（Model Context Protocol）将其操作暴露给 AI 编码助手：
+
+```bash
+shirabe mcp
+```
+
+服务器提供十二个工具——`browser_navigate`、`browser_navigate_back`、`browser_navigate_forward`、`browser_snapshot`、`browser_dom`、`browser_screenshot`、`browser_click`、`browser_type`、`browser_press_key`、`browser_evaluate`、`browser_console_messages`、`browser_resize`——每个工具都通过环回代理到进程内 CDP 引擎。一个进程既是浏览器又是 MCP 服务器；当它退出时，Chrome 会被终止。将其接入 MCP 客户端：
+
+```json
+{
+  "mcpServers": {
+    "shirabe": { "command": "shirabe", "args": ["mcp"] }
+  }
+}
+```
+
+设置 `SHIRABE_URL` 来更改浏览器启动时打开的页面（默认 `about:blank`），设置 `SHIRABE_DOWNLOAD_PROXY` 通过代理路由 Chrome 的流量。库中的浏览器后端、镜像和获取选项仍然适用。
+
 ## 开发
 
 ```bash
