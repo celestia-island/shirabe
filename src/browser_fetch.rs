@@ -360,15 +360,16 @@ fn fetch_with_retry(url: &str) -> anyhow::Result<Vec<u8>> {
         .map(std::time::Duration::from_secs)
         .unwrap_or(std::time::Duration::from_secs(600));
     let mut builder = reqwest::blocking::Client::builder().timeout(timeout);
-    if let Ok(proxy) = std::env::var("SHIRABE_DOWNLOAD_PROXY") {
-        let proxy = proxy.trim();
-        if !proxy.is_empty() {
-            log(&format!("using download proxy {proxy}"));
-            builder =
-                builder.proxy(reqwest::Proxy::all(proxy).map_err(|e| {
-                    anyhow::anyhow!("invalid SHIRABE_DOWNLOAD_PROXY {proxy:?}: {e}")
-                })?);
-        }
+    let proxy_url = std::env::var("SHIRABE_DOWNLOAD_PROXY")
+        .ok()
+        .filter(|s| !s.trim().is_empty())
+        .or_else(crate::detect_proxy);
+    if let Some(proxy) = proxy_url {
+        log(&format!("using download proxy {proxy}"));
+        builder = builder.proxy(
+            reqwest::Proxy::all(&proxy)
+                .map_err(|e| anyhow::anyhow!("invalid proxy {proxy:?}: {e}"))?,
+        );
     }
     let client = builder.build()?;
     let mut last_err: Option<anyhow::Error> = None;

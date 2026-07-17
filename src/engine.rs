@@ -1062,8 +1062,13 @@ async fn wait_for_devtools(port: u16) -> Result<String, String> {
     // Page.*/Runtime.* with "<method> wasn't found". Poll /json/list for
     // the first page target's websocket URL instead.
     let list_url = format!("http://127.0.0.1:{port}/json/list");
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(2))
+    let mut client_builder = reqwest::Client::builder().timeout(Duration::from_secs(2));
+    if let Some(ref p) = crate::detect_proxy() {
+        if let Ok(proxy) = reqwest::Proxy::all(p) {
+            client_builder = client_builder.proxy(proxy);
+        }
+    }
+    let client = client_builder
         .build()
         .map_err(|e| format!("http client: {e}"))?;
     let deadline = std::time::Instant::now() + DEVTOOLS_TIMEOUT;

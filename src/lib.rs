@@ -46,3 +46,19 @@ pub use engine::{DebugServerConfig, start_debug_server};
 #[cfg(feature = "foreign-engine")]
 pub use ffi::{CdylibEngine, Engine};
 pub use resolver::resolve_executable;
+
+/// Detect HTTP proxy from environment variables.
+///
+/// Checks `SHIRABE_PROXY`, `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY` in order,
+/// returning the first non-empty value.
+pub fn detect_proxy() -> Option<String> {
+    for var in &["SHIRABE_PROXY", "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY"] {
+        if let Ok(val) = std::env::var(var) {
+            let val = val.trim().to_string();
+            if !val.is_empty() {
+                return Some(val);
+            }
+        }
+    }
+    None
+}

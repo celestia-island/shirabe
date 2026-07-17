@@ -32,7 +32,7 @@ use rmcp::{
 };
 use schemars::JsonSchema;
 
-use crate::{DebugServerConfig, start_debug_server};
+use crate::{DebugServerConfig, detect_proxy, start_debug_server};
 
 struct Server {
     base_url: Arc<RwLock<String>>,
@@ -517,10 +517,13 @@ pub async fn run() -> Result<()> {
         let target = format!("http://127.0.0.1:{port}");
         // Wait for the debug server's /health to come up, then publish its URL
         // so the MCP tools can start proxying.
-        let probe = reqwest::Client::builder()
-            .timeout(Duration::from_secs(2))
-            .build()
-            .unwrap_or_default();
+        let mut probe_builder = reqwest::Client::builder().timeout(Duration::from_secs(2));
+        if let Some(ref p) = detect_proxy() {
+            if let Ok(proxy) = reqwest::Proxy::all(p) {
+                probe_builder = probe_builder.proxy(proxy);
+            }
+        }
+        let probe = probe_builder.build().unwrap_or_default();
         // start_debug_server blocks until cancelled; run it in the foreground of
         // this task. First, hand off the health-check to a short poller that
         // flips base_url once the server answers.
@@ -548,13 +551,17 @@ pub async fn run() -> Result<()> {
         }
     });
 
+    let mut client_builder = reqwest::Client::builder()
+        .timeout(Duration::from_secs(30))
+        .connect_timeout(Duration::from_secs(5));
+    if let Some(ref p) = detect_proxy() {
+        if let Ok(proxy) = reqwest::Proxy::all(p) {
+            client_builder = client_builder.proxy(proxy);
+        }
+    }
     let server = Server {
         base_url,
-        http: reqwest::Client::builder()
-            .timeout(Duration::from_secs(30))
-            .connect_timeout(Duration::from_secs(5))
-            .build()
-            .unwrap_or_default(),
+        http: client_builder.build().unwrap_or_default(),
     };
 
     let transport = rmcp::transport::stdio();
