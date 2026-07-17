@@ -57,7 +57,7 @@ impl Server {
     }
 
     fn tool_result(text: impl Into<String>) -> CallToolResult {
-        CallToolResult::success(vec![Content::text(text)])
+        CallToolResult::success(vec![ContentBlock::text(text)])
     }
 
     async fn http_post(&self, path: &str, body: Value) -> Result<Value, McpError> {
@@ -343,7 +343,7 @@ impl Server {
             } else {
                 format!("data:{mime};base64,{data}")
             };
-            Ok(CallToolResult::success(vec![Content::text(data_url)]))
+            Ok(CallToolResult::success(vec![ContentBlock::text(data_url)]))
         } else {
             let err = v
                 .get("error")

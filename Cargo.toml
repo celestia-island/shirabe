@@ -36,9 +36,9 @@ mcp = ["dep:rmcp", "dep:schemars", "tokio/io-std"]
 
 [dependencies]
 tokio = { version = "^1", features = ["rt-multi-thread", "net", "process", "macros", "time", "sync"] }
-tokio-tungstenite = { version = "^0.27", features = ["rustls-tls-webpki-roots"] }
+tokio-tungstenite = { version = "^0.29", features = ["rustls-tls-webpki-roots"] }
 axum = "^0.8"
-tower-http = { version = "^0.6", features = ["cors", "compression-gzip"] }
+tower-http = { version = "^0.7", features = ["cors", "compression-gzip"] }
 serde = { version = "^1", features = ["derive"] }
 serde_json = "^1"
 futures = "^0.3"
@@ -53,14 +53,14 @@ anyhow = "^1"
 reqwest = { version = "^0.13", features = ["json", "blocking", "rustls-no-provider"], default-features = false }
 rustls = { version = "^0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
 # Optional: runtime Chrome download (sha256 verify + zip extract)
-sha2 = { version = "^0.10", optional = true }
-zip = { version = "^2", optional = true }
+sha2 = { version = "^0.11", optional = true }
+zip = { version = "^8", optional = true }
 # Optional: Firefox / Servo backends are driven through a C-ABI engine contract
 # shipped as a dynamic library (built by the browser vendors, published to
 # Releases). `libloading` dlopens that contract.
 libloading = { version = "^0.8", optional = true }
 # MCP (optional, for standalone MCP server)
-rmcp = { version = "^1", optional = true, features = ["server", "transport-io", "macros", "schemars"] }
+rmcp = { version = "^2", optional = true, features = ["server", "transport-io", "macros", "schemars"] }
 schemars = { version = "^1", optional = true, features = ["derive"] }
 
 [dev-dependencies]
@@ -70,5 +70,5 @@ serial_test = "^3"
 anyhow = "^1"
 reqwest = { version = "^0.13", features = ["blocking", "rustls-no-provider"], default-features = false }
 rustls = { version = "^0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
-sha2 = "^0.10"
-zip = "^2"
+sha2 = "^0.11"
+zip = "^8"
