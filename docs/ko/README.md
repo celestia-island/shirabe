@@ -202,4 +202,3 @@ done
 1. The wrapper runs `shirabe mcp` in a `while true` loop.
 2. If the process exits, it restarts within 0.2 seconds.
 3. To update: `kill $(pgrep -f "shirabe mcp" | head -1)`
-4. For managed restarts, use [malkuth](https://github.com/celestia-island/malkuth) as a supervised watcher.
