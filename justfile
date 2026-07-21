@@ -17,6 +17,7 @@ default:
 
 # Format all sources.
 fmt:
+    just fmt-toml
     cargo fmt --all
 
 # Check formatting without writing.
