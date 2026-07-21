@@ -58,6 +58,20 @@ curl -X POST http://localhost:3001/navigate \
 curl -X POST http://localhost:3001/screenshot -d '{}'
 ```
 
+### npx (Rust ツールチェーン不要)
+
+プリビルド済みバイナリが npm に公開されているため、`shirabe` を1つのコマンドで実行できます——`cargo build` も Chrome のインストールも不要です：
+
+```bash
+npx @celestia-island/shirabe debug --port 3001
+```
+
+`@celestia-island/shirabe` ルートパッケージは、`optionalDependencies` + postinstall セレクタを通じて自動的に正しいプラットフォームのサブパッケージ（`-linux-x64` / `-darwin-arm64` / `-win32-x64`）を取得します。バージョンを固定するには：
+
+```bash
+npx @celestia-island/shirabe@0.1.0 debug --port 3001
+```
+
 ### ライブラリ
 
 ```rust
@@ -186,13 +200,11 @@ SHIRABE_SKIP_BROWSER_FETCH=1 cargo test --all-features
 
 SySL-1.0 (Synthetic Source License)。詳細は [LICENSE](https://sysl.celestia.world) を参照してください。
 
-## MCP Server Deployment
+## MCPサーバーのデプロイ
 
-> (English section — translation pending)
+本番環境でのMCPデプロイには、**自動再起動ラッパー**を使用して、クライアントセッションを中断することなくサーバーを更新中も稼働し続けさせます。
 
-For production MCP deployments, use an **auto-restart wrapper** to keep the server alive across updates without interrupting the client session.
-
-### Recommended launcher
+### 推奨ランチャー
 
 #!/bin/bash
 while true; do
@@ -200,8 +212,8 @@ while true; do
   sleep 0.2
 done
 
-### How it works
+### 仕組み
 
-1. The wrapper runs `shirabe mcp` in a `while true` loop.
-2. If the process exits, it restarts within 0.2 seconds.
-3. To update: `kill $(pgrep -f "shirabe mcp" | head -1)`
+1. ラッパーは `while true` ループで `shirabe mcp` を実行します。
+2. プロセスが終了すると、0.2秒以内に再起動します。
+3. 更新するには：`kill $(pgrep -f "shirabe mcp" | head -1)`
