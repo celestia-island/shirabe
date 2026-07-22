@@ -457,7 +457,9 @@ impl Server {
         )))
     }
 
-    #[tool(description = "Initialize or repair the browser engine. Resolves the Chromium backend (env override → system PATH → runtime download to cache), starts the debug server, and returns the engine state. Call this when browser tools report errors — the error message will say 'Try running the `init` tool'.")]
+    #[tool(
+        description = "Initialize or repair the browser engine. Resolves the Chromium backend (env override → system PATH → runtime download to cache), starts the debug server, and returns the engine state. Call this when browser tools report errors — the error message will say 'Try running the `init` tool'."
+    )]
     async fn init(
         &self,
         Parameters(args): Parameters<InitArgs>,
@@ -467,8 +469,11 @@ impl Server {
             if let Ok(url) = self.ensure_up().await {
                 // Probe the backend info endpoint.
                 let info = self.http_get("info", &[]).await;
-                return Ok(Self::tool_result(format!("Browser engine already running at {url}. Health check passed. Info: {}",
-                    info.map(|v| v.to_string()).unwrap_or_else(|_| "unavailable".into()))));
+                return Ok(Self::tool_result(format!(
+                    "Browser engine already running at {url}. Health check passed. Info: {}",
+                    info.map(|v| v.to_string())
+                        .unwrap_or_else(|_| "unavailable".into())
+                )));
             }
         }
 
@@ -477,17 +482,31 @@ impl Server {
         // found locally (the `runtime-fetch` feature).
         let (backend, path) = match tokio::task::spawn_blocking(|| -> anyhow::Result<_> {
             crate::backend::resolve()
-        }).await {
+        })
+        .await
+        {
             Ok(Ok((backend, exe))) => (backend, exe),
-            Ok(Err(e)) => return Err(McpError::internal_error(format!("Backend resolution failed: {e}"), None)),
-            Err(join_err) => return Err(McpError::internal_error(format!("Backend resolver task panicked: {join_err}"), None)),
+            Ok(Err(e)) => {
+                return Err(McpError::internal_error(
+                    format!("Backend resolution failed: {e}"),
+                    None,
+                ));
+            }
+            Err(join_err) => {
+                return Err(McpError::internal_error(
+                    format!("Backend resolver task panicked: {join_err}"),
+                    None,
+                ));
+            }
         };
 
         // Explicitly reset the base URL so ensure_up rejects calls
         // until the health probe finds the new server.
         *self.base_url.write().await = String::new();
 
-        let port = free_loopback_port().map_err(|e| McpError::internal_error(format!("Failed to bind free port: {e}"), None))?;
+        let port = free_loopback_port().map_err(|e| {
+            McpError::internal_error(format!("Failed to bind free port: {e}"), None)
+        })?;
         let debug_cfg = crate::DebugServerConfig {
             base_url: initial_base_url(),
             dev_port: 0,
