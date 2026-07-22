@@ -49,7 +49,7 @@ impl Server {
         let url = self.base_url.read().await.clone();
         if url.is_empty() {
             return Err(McpError::internal_error(
-                "Debug server is not up yet. Wait a moment and retry.",
+                "Browser engine is not running. Try running the `init` tool first to bootstrap the browser — this may download a pinned Chromium build on first use.",
                 None,
             ));
         }
@@ -208,6 +208,13 @@ struct ConsoleMessagesArgs {
 struct ResizeArgs {
     width: u32,
     height: u32,
+}
+
+#[derive(Deserialize, JsonSchema)]
+struct InitArgs {
+    /// Resume this session (continue using the existing browser if it is healthy).
+    #[serde(default)]
+    resume: bool,
 }
 
 // ── Browser tools (HTTP proxy to the in-process debug server) ─────────
@@ -447,6 +454,85 @@ impl Server {
         Ok(Self::tool_result(format!(
             "Resized to {}x{}",
             args.width, args.height
+        )))
+    }
+
+    #[tool(description = "Initialize or repair the browser engine. Resolves the Chromium backend (env override → system PATH → runtime download to cache), starts the debug server, and returns the engine state. Call this when browser tools report errors — the error message will say 'Try running the `init` tool'.")]
+    async fn init(
+        &self,
+        Parameters(args): Parameters<InitArgs>,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, McpError> {
+        if args.resume {
+            if let Ok(url) = self.ensure_up().await {
+                // Probe the backend info endpoint.
+                let info = self.http_get("info", &[]).await;
+                return Ok(Self::tool_result(format!("Browser engine already running at {url}. Health check passed. Info: {}",
+                    info.map(|v| v.to_string()).unwrap_or_else(|_| "unavailable".into()))));
+            }
+        }
+
+        // Resolve the browser backend — this may trigger a blocking
+        // download of a pinned Chrome-for-Testing build if none is
+        // found locally (the `runtime-fetch` feature).
+        let (backend, path) = match tokio::task::spawn_blocking(|| -> anyhow::Result<_> {
+            crate::backend::resolve()
+        }).await {
+            Ok(Ok((backend, exe))) => (backend, exe),
+            Ok(Err(e)) => return Err(McpError::internal_error(format!("Backend resolution failed: {e}"), None)),
+            Err(join_err) => return Err(McpError::internal_error(format!("Backend resolver task panicked: {join_err}"), None)),
+        };
+
+        // Explicitly reset the base URL so ensure_up rejects calls
+        // until the health probe finds the new server.
+        *self.base_url.write().await = String::new();
+
+        let port = free_loopback_port().map_err(|e| McpError::internal_error(format!("Failed to bind free port: {e}"), None))?;
+        let debug_cfg = crate::DebugServerConfig {
+            base_url: initial_base_url(),
+            dev_port: 0,
+            dist_dir: String::new(),
+            package_name: String::new(),
+            proxy: std::env::var("SHIRABE_DOWNLOAD_PROXY")
+                .ok()
+                .filter(|s| !s.is_empty()),
+        };
+        let base_url_clone = Arc::clone(&self.base_url);
+        tokio::spawn(async move {
+            let target = format!("http://127.0.0.1:{port}");
+            let mut probe_builder = reqwest::Client::builder().timeout(Duration::from_secs(2));
+            if let Some(ref p) = crate::detect_proxy() {
+                if let Ok(proxy) = reqwest::Proxy::all(p) {
+                    probe_builder = probe_builder.proxy(proxy);
+                }
+            }
+            let probe = probe_builder.build().unwrap_or_default();
+            let published = Arc::clone(&base_url_clone);
+            tokio::spawn(async move {
+                let deadline = std::time::Instant::now() + Duration::from_secs(45);
+                while std::time::Instant::now() < deadline {
+                    if probe
+                        .get(format!("{target}/health"))
+                        .send()
+                        .await
+                        .is_ok_and(|r| r.status().is_success())
+                    {
+                        *published.write().await = target;
+                        return;
+                    }
+                    tokio::time::sleep(Duration::from_millis(250)).await;
+                }
+                tracing::warn!("init: debug server never became healthy within 45s");
+            });
+            if let Err(e) = crate::start_debug_server(debug_cfg, port).await {
+                tracing::error!(error = %e, "init: debug server exited");
+            }
+        });
+
+        Ok(Self::tool_result(format!(
+            "Bootstrapping browser engine. Backend: {} at {}. The debug server is starting on port {port} — the browser should be ready within a few seconds.",
+            backend.label(),
+            path.display(),
         )))
     }
 }
