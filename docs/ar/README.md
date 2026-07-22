@@ -58,6 +58,20 @@ curl -X POST http://localhost:3001/navigate \
 curl -X POST http://localhost:3001/screenshot -d '{}'
 ```
 
+### npx (لا حاجة لأدوات Rust)
+
+يتم نشر الثنائيات المُجمَّعة مسبقًا على npm، لذا يمكنك تشغيل `shirabe` بأمر واحد — لا حاجة لـ `cargo build` ولا لتثبيت Chrome :
+
+```bash
+npx @celestia-island/shirabe debug --port 3001
+```
+
+الحزمة الجذرية `@celestia-island/shirabe` تسحب تلقائيًا الحزمة الفرعية المناسبة للنظام الأساسي (`-linux-x64` / `-darwin-arm64` / `-win32-x64`) عبر `optionalDependencies` + منتقي postinstall. لتثبيت إصدار :
+
+```bash
+npx @celestia-island/shirabe@0.1.0 debug --port 3001
+```
+
 ### مكتبة
 
 ```rust
@@ -184,13 +198,11 @@ SHIRABE_SKIP_BROWSER_FETCH=1 cargo test --all-features
 
 SySL-1.0 (رخصة المصدر الاصطناعي). راجع [LICENSE](https://sysl.celestia.world).
 
-## MCP Server Deployment
+## نشر خادم MCP
 
-> (English section — translation pending)
+لنشر MCP في الإنتاج، استخدم **غلاف إعادة تشغيل تلقائي** للحفاظ على تشغيل الخادم أثناء التحديثات دون مقاطعة جلسة العميل.
 
-For production MCP deployments, use an **auto-restart wrapper** to keep the server alive across updates without interrupting the client session.
-
-### Recommended launcher
+### المُشغِّل الموصى به
 
 #!/bin/bash
 while true; do
@@ -198,8 +210,8 @@ while true; do
   sleep 0.2
 done
 
-### How it works
+### كيفية عمله
 
-1. The wrapper runs `shirabe mcp` in a `while true` loop.
-2. If the process exits, it restarts within 0.2 seconds.
-3. To update: `kill $(pgrep -f "shirabe mcp" | head -1)`
+1. يقوم الغلاف بتشغيل `shirabe mcp` في حلقة `while true`.
+2. إذا خرجت العملية، فإنها تُعاد تشغيلها في غضون 0.2 ثانية.
+3. للتحديث: `kill $(pgrep -f "shirabe mcp" | head -1)`
