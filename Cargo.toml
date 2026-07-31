@@ -65,7 +65,7 @@ tracing-subscriber = { version = "^0.3", features = ["env-filter"] }
 zip = { version = "^8", optional = true }
 [dev-dependencies]
 
-serial_test = "^3"
+serial_test = "^4"
 [build-dependencies]
 
 anyhow = "^1"
