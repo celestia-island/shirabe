@@ -38,7 +38,7 @@ mcp = ["dep:rmcp", "dep:schemars", "tokio/io-std"]
 
 anyhow = "^1"
 axum = "^0.8"
-base64 = "^0.22"
+base64 = "^0.23"
 chrono = "^0.4"
 clap = { version = "^4", features = ["derive"] }
 futures = "^0.3"
