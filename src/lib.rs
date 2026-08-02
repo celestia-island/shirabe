@@ -32,6 +32,7 @@ pub mod bundle;
 pub mod engine;
 #[cfg(feature = "foreign-engine")]
 pub mod ffi;
+mod lease;
 #[cfg(feature = "mcp")]
 pub mod mcp;
 pub mod resolver;

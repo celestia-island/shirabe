@@ -160,7 +160,7 @@ print!("{}", render_bundle_report(&report));
 | Method | Path | Description |
 |--------|------|-------------|
 | `GET`  | `/health` | Server health |
-| `GET`  | `/info` | Browser status + selected backend |
+| `GET`  | `/info` | Browser status + selected backend + tab slots |
 | `POST` | `/navigate` | Navigate to a URL |
 | `POST` | `/click` | Click an element |
 | `POST` | `/type` | Type text |
@@ -170,8 +170,30 @@ print!("{}", render_bundle_report(&report));
 | `GET`  | `/dom` | Query the DOM |
 | `GET`  | `/a11y` | Accessibility tree |
 | `POST` | `/batch` | Batch operations |
+| `POST` | `/browser/close` | Kill the browser, release its tab slot |
+| `POST` | `/browser/restart` | Restart the browser (`{"override": true}` exceeds the tab cap) |
 
 …plus console, network and websocket capture endpoints for full control.
+
+## Resource guards
+
+Headless browsers are memory-hungry, so shirabe enforces a set of rigid
+defaults that keep a swarm of sessions (or one runaway agent) from eating the
+machine. Every lock is tunable through the `SHIRABE_*` env namespace — i.e.
+the MCP server's env configuration — but the defaults are deliberately strict:
+
+| Env | Default | Effect |
+|-----|---------|--------|
+| `SHIRABE_MAX_TABS` | `3` | Machine-wide cap on concurrent browsers (a cross-process lease file with heartbeat-based expiry). Exceeding it denies the spawn with a warning that names both remedies: pass `override=true` (tool/API) or close other browsers first. |
+| `SHIRABE_IDLE_TIMEOUT_SECS` | `300` | A browser with no commands for this long is recycled (killed, slot released). `0` disables. The next tool call lazily restarts it. |
+| `SHIRABE_TAB_MEM_LIMIT_MB` | `150` | Per-tab JS-heap ceiling; the tab is force-crashed (`Page.crash`) when exceeded. `0` disables. |
+| `SHIRABE_FPS_CAP` | `15` | `requestAnimationFrame` throttled to this many callbacks/sec on every page. `0` disables. |
+| `SHIRABE_DISABLE_PERF_LOCKS` | unset | `1` / `true` turns the memory ceiling and fps cap off in one go. |
+| `SHIRABE_LEASE_FILE` | temp dir | Location of the tab-lease heartbeat file (mainly for tests). |
+
+Recycling always prefers a graceful `Browser.close` on the browser-level
+devtools socket, so the whole Chromium process tree exits — killing only the
+main process would orphan its renderer/gpu/network children on Windows.
 
 ## MCP server
 
@@ -184,12 +206,15 @@ Context Protocol:
 shirabe mcp
 ```
 
-The server advertises twelve tools — `browser_navigate`, `browser_navigate_back`,
+The server advertises thirteen tools — `browser_navigate`, `browser_navigate_back`,
 `browser_navigate_forward`, `browser_snapshot`, `browser_dom`, `browser_screenshot`,
 `browser_click`, `browser_type`, `browser_press_key`, `browser_evaluate`,
-`browser_console_messages`, `browser_resize` — each proxying over loopback to
-the in-process CDP engine. One process is both the browser and the MCP server;
-when it exits, Chrome is killed. Wire it into an MCP client:
+`browser_console_messages`, `browser_resize`, `browser_close` — each proxying
+over loopback to the in-process CDP engine. One process is both the browser
+and the MCP server; when it exits, Chrome is killed. The `init` tool takes
+`resume` (keep a healthy browser) and `override` (exceed the tab cap) flags;
+`browser_close` releases the tab slot for other sessions. Wire it into an MCP
+client:
 
 ```json
 {

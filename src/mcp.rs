@@ -144,6 +144,62 @@ impl Server {
         }
         Ok(())
     }
+
+    /// Start a fresh in-process debug server on an ephemeral loopback port and
+    /// wait until it answers `/health`. Publishes the URL on success so
+    /// [`Server::ensure_up`] accepts subsequent calls. One server per process:
+    /// callers must only invoke this when no healthy server is published.
+    async fn bootstrap_server(&self) -> Result<String, McpError> {
+        // Explicitly reset the base URL so ensure_up rejects calls until the
+        // new server is healthy.
+        *self.base_url.write().await = String::new();
+
+        let port = free_loopback_port().map_err(|e| {
+            McpError::internal_error(format!("Failed to bind free port: {e}"), None)
+        })?;
+        let debug_cfg = crate::DebugServerConfig {
+            base_url: initial_base_url(),
+            dev_port: 0,
+            dist_dir: String::new(),
+            package_name: String::new(),
+            proxy: std::env::var("SHIRABE_DOWNLOAD_PROXY")
+                .ok()
+                .filter(|s| !s.is_empty()),
+        };
+        let target = format!("http://127.0.0.1:{port}");
+        tokio::spawn(async move {
+            if let Err(e) = crate::start_debug_server(debug_cfg, port).await {
+                tracing::error!(error = %e, "init: debug server exited");
+            }
+        });
+
+        let mut probe_builder = reqwest::Client::builder().timeout(Duration::from_secs(2));
+        if let Some(ref p) = crate::detect_proxy() {
+            if let Ok(proxy) = reqwest::Proxy::all(p) {
+                probe_builder = probe_builder.proxy(proxy);
+            }
+        }
+        let probe = probe_builder
+            .build()
+            .map_err(|e| McpError::internal_error(format!("http client: {e}"), None))?;
+        let deadline = std::time::Instant::now() + Duration::from_secs(45);
+        while std::time::Instant::now() < deadline {
+            if probe
+                .get(format!("{target}/health"))
+                .send()
+                .await
+                .is_ok_and(|r| r.status().is_success())
+            {
+                *self.base_url.write().await = target.clone();
+                return Ok(target);
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+        Err(McpError::internal_error(
+            format!("debug server on {target} never became healthy within 45s"),
+            None,
+        ))
+    }
 }
 
 // ── Tool argument structs ────────────────────────────
@@ -215,6 +271,12 @@ struct InitArgs {
     /// Resume this session (continue using the existing browser if it is healthy).
     #[serde(default)]
     resume: bool,
+    /// Bypass the machine-wide tab cap (SHIRABE_MAX_TABS, default 3) and start
+    /// the browser anyway. Only set this when you know the extra concurrent
+    /// browser is safe — otherwise close other browsers first via
+    /// `browser_close`.
+    #[serde(default, rename = "override")]
+    r#override: bool,
 }
 
 // ── Browser tools (HTTP proxy to the in-process debug server) ─────────
@@ -458,7 +520,7 @@ impl Server {
     }
 
     #[tool(
-        description = "Initialize or repair the browser engine. Resolves the Chromium backend (env override → system PATH → runtime download to cache), starts the debug server, and returns the engine state. Call this when browser tools report errors — the error message will say 'Try running the `init` tool'."
+        description = "Initialize or repair the browser engine. Starts the debug server if needed, then restarts the headless browser under the machine-wide tab cap (SHIRABE_MAX_TABS, default 3) — pass `override: true` to exceed the cap, or close other browsers via `browser_close` first. Call this when browser tools report errors — the error message will say 'Try running the `init` tool'."
     )]
     async fn init(
         &self,
@@ -477,82 +539,48 @@ impl Server {
             }
         }
 
-        // Resolve the browser backend — this may trigger a blocking
-        // download of a pinned Chrome-for-Testing build if none is
-        // found locally (the `runtime-fetch` feature).
-        let (backend, path) = match tokio::task::spawn_blocking(|| -> anyhow::Result<_> {
-            crate::backend::resolve()
-        })
-        .await
-        {
-            Ok(Ok((backend, exe))) => (backend, exe),
-            Ok(Err(e)) => {
-                return Err(McpError::internal_error(
-                    format!("Backend resolution failed: {e}"),
-                    None,
-                ));
+        // Ensure a debug server is up; bootstrap one on an ephemeral port when
+        // the published URL is dead. One server, one browser — never two.
+        match self.ensure_up().await {
+            Ok(_) => {}
+            Err(_) => {
+                self.bootstrap_server().await?;
             }
-            Err(join_err) => {
-                return Err(McpError::internal_error(
-                    format!("Backend resolver task panicked: {join_err}"),
-                    None,
-                ));
-            }
+        }
+
+        // Ask the running server to (re)start the browser under the tab
+        // lease. Skip the bounce when it is already healthy and no override
+        // was requested.
+        let info = self.http_get("info", &[]).await.ok();
+        let connected = info
+            .as_ref()
+            .and_then(|v| v.get("data"))
+            .and_then(|d| d.get("browser_connected"))
+            .and_then(|b| b.as_bool())
+            .unwrap_or(false);
+        let v = if args.r#override || !connected {
+            self.http_post("browser/restart", json!({ "override": args.r#override }))
+                .await?
+        } else {
+            info.unwrap_or_else(|| json!({ "ok": true }))
         };
+        Ok(Self::tool_result(
+            serde_json::to_string_pretty(&v).unwrap_or_else(|_| v.to_string()),
+        ))
+    }
 
-        // Explicitly reset the base URL so ensure_up rejects calls
-        // until the health probe finds the new server.
-        *self.base_url.write().await = String::new();
-
-        let port = free_loopback_port().map_err(|e| {
-            McpError::internal_error(format!("Failed to bind free port: {e}"), None)
-        })?;
-        let debug_cfg = crate::DebugServerConfig {
-            base_url: initial_base_url(),
-            dev_port: 0,
-            dist_dir: String::new(),
-            package_name: String::new(),
-            proxy: std::env::var("SHIRABE_DOWNLOAD_PROXY")
-                .ok()
-                .filter(|s| !s.is_empty()),
-        };
-        let base_url_clone = Arc::clone(&self.base_url);
-        tokio::spawn(async move {
-            let target = format!("http://127.0.0.1:{port}");
-            let mut probe_builder = reqwest::Client::builder().timeout(Duration::from_secs(2));
-            if let Some(ref p) = crate::detect_proxy() {
-                if let Ok(proxy) = reqwest::Proxy::all(p) {
-                    probe_builder = probe_builder.proxy(proxy);
-                }
-            }
-            let probe = probe_builder.build().unwrap_or_default();
-            let published = Arc::clone(&base_url_clone);
-            tokio::spawn(async move {
-                let deadline = std::time::Instant::now() + Duration::from_secs(45);
-                while std::time::Instant::now() < deadline {
-                    if probe
-                        .get(format!("{target}/health"))
-                        .send()
-                        .await
-                        .is_ok_and(|r| r.status().is_success())
-                    {
-                        *published.write().await = target;
-                        return;
-                    }
-                    tokio::time::sleep(Duration::from_millis(250)).await;
-                }
-                tracing::warn!("init: debug server never became healthy within 45s");
-            });
-            if let Err(e) = crate::start_debug_server(debug_cfg, port).await {
-                tracing::error!(error = %e, "init: debug server exited");
-            }
-        });
-
-        Ok(Self::tool_result(format!(
-            "Bootstrapping browser engine. Backend: {} at {}. The debug server is starting on port {port} — the browser should be ready within a few seconds.",
-            backend.label(),
-            path.display(),
-        )))
+    #[tool(
+        description = "Close the headless browser, killing its Chrome process and releasing its tab slot (SHIRABE_MAX_TABS, default 3) for other sessions. The next browser tool call lazily restarts a fresh browser; use `init` for explicit boot control."
+    )]
+    async fn browser_close(
+        &self,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, McpError> {
+        self.ensure_up().await?;
+        let v = self.http_post("browser/close", json!({})).await?;
+        Ok(Self::tool_result(
+            serde_json::to_string_pretty(&v).unwrap_or_else(|_| v.to_string()),
+        ))
     }
 }
 
