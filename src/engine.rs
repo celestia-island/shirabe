@@ -7,6 +7,8 @@ use std::{
 };
 use tokio::sync::{RwLock, mpsc, oneshot};
 
+use crate::lease::{self, TabLease};
+
 use axum::{
     Router,
     extract::{Json, Query, State},
@@ -23,6 +25,47 @@ const DEBUG_API_VERSION: &str = "0.1.0";
 const DEFAULT_VIEWPORT_W: u32 = 1280;
 const DEFAULT_VIEWPORT_H: u32 = 720;
 const OP_TIMEOUT_SECS: u64 = 30;
+
+// ── resource-guard defaults ───────────────────────────────────────────────
+// Rigid by default. Each lock can be loosened (or disabled with 0) through
+// the `SHIRABE_*` env namespace, i.e. the MCP server's env configuration.
+const IDLE_RECYCLE_SECS: u64 = 300;
+const TAB_MEM_LIMIT_MB: u64 = 150;
+const FPS_CAP: u32 = 15;
+
+/// How long a browser may sit without a single command before it is recycled.
+fn idle_recycle_timeout() -> Duration {
+    let secs = std::env::var("SHIRABE_IDLE_TIMEOUT_SECS")
+        .ok()
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .unwrap_or(IDLE_RECYCLE_SECS);
+    Duration::from_secs(secs)
+}
+
+/// Per-tab JS-heap ceiling in bytes (0 disables the check).
+fn tab_mem_limit_bytes() -> f64 {
+    let mb = std::env::var("SHIRABE_TAB_MEM_LIMIT_MB")
+        .ok()
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .unwrap_or(TAB_MEM_LIMIT_MB);
+    mb as f64 * 1024.0 * 1024.0
+}
+
+/// Cap on `requestAnimationFrame` callbacks per second (0 disables the cap).
+fn fps_cap() -> u32 {
+    std::env::var("SHIRABE_FPS_CAP")
+        .ok()
+        .and_then(|v| v.trim().parse::<u32>().ok())
+        .unwrap_or(FPS_CAP)
+}
+
+/// `SHIRABE_DISABLE_PERF_LOCKS=1|true` turns the memory ceiling and the rAF
+/// cap off in one go.
+fn perf_locks_enabled() -> bool {
+    !std::env::var("SHIRABE_DISABLE_PERF_LOCKS")
+        .ok()
+        .is_some_and(|v| v.trim() == "1" || v.trim().eq_ignore_ascii_case("true"))
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct ApiResponse<T: Serialize> {
@@ -72,6 +115,11 @@ struct InfoResponse {
     browser_connected: bool,
     browser_engine: String,
     viewport: [u32; 2],
+    /// Machine-wide concurrent-tab state (see `lease`).
+    tabs_cap: usize,
+    tabs_used: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    browser_error: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -459,6 +507,9 @@ enum BrowserCommand {
         back: bool,
         resp: oneshot::Sender<Result<(), String>>,
     },
+    /// Internal teardown: idle recycle, manual close, or crash recovery.
+    /// The dispatch loop exits on this and reaps Chrome via kill_on_drop.
+    Shutdown,
 }
 
 pub(crate) struct BrowserHandle {
@@ -472,6 +523,10 @@ impl BrowserHandle {
     }
     async fn is_connected(&self) -> bool {
         *self.connected.read().await
+    }
+    /// Ask the dispatch loop to exit and reap Chrome (kill_on_drop).
+    async fn shutdown(&self) {
+        let _ = self.send(BrowserCommand::Shutdown).await;
     }
 }
 
@@ -513,6 +568,41 @@ Object.defineProperty(navigator, 'languages', {
     get: () => ['en-US', 'en'],
 });
 "#;
+
+/// Performance lock injected into every page: throttles `requestAnimationFrame`
+/// to the shirabe fps cap (default 15 fps, `SHIRABE_FPS_CAP`). Callbacks are
+/// coalesced into at most one flush per throttle window, so a runaway
+/// animation loop can't burn the CPU while the page is being automated. It
+/// also serves as the *only* working rAF in environments where the native one
+/// never fires (e.g. headless Chromium on `data:` documents).
+fn perf_lock_js(fps: u32) -> String {
+    format!(
+        r#"(function () {{
+    const CAP_MS = 1000 / {fps};
+    const pending = new Map();
+    let nextId = 0;
+    let lastFire = 0;
+    let timer = null;
+    window.requestAnimationFrame = function (cb) {{
+        const id = ++nextId;
+        pending.set(id, cb);
+        const now = performance.now();
+        const wait = Math.max(0, CAP_MS - (now - lastFire));
+        if (timer === null) {{
+            timer = setTimeout(function () {{
+                timer = null;
+                lastFire = performance.now();
+                const batch = Array.from(pending.values());
+                pending.clear();
+                for (const fn of batch) {{ try {{ fn(lastFire); }} catch (e) {{}} }}
+            }}, wait);
+        }}
+        return id;
+    }};
+    window.cancelAnimationFrame = function (id) {{ pending.delete(id); }};
+}})();"#
+    )
+}
 
 use futures::{SinkExt, StreamExt};
 use serde_json::{Value, json};
@@ -661,6 +751,17 @@ fn cap_map<K: std::hash::Hash + Eq + Clone, V>(m: &mut HashMap<K, V>, cap: usize
 
 // ── launch + connect ─────────────────────────────────────────────────────
 
+/// Tunables for a browser spawn. Defaults are the rigid resource locks
+/// (tab cap, idle recycle, memory ceiling, fps cap) from the `SHIRABE_*` env
+/// namespace; `tab_override` is the one per-spawn knob.
+#[derive(Debug, Clone, Default)]
+pub(super) struct SpawnOptions {
+    /// Optional proxy server for Chrome (e.g. "http://localhost:7890").
+    pub proxy: Option<String>,
+    /// Bypass the machine-wide tab cap (SHIRABE_MAX_TABS, default 3).
+    pub tab_override: bool,
+}
+
 pub(super) async fn spawn_browser(
     base_url: String,
     _initial_url: Option<String>,
@@ -668,10 +769,17 @@ pub(super) async fn spawn_browser(
     errors: Arc<RwLock<Vec<ErrorEntry>>>,
     network: Arc<RwLock<HashMap<String, NetworkResource>>>,
     websockets: Arc<RwLock<HashMap<String, WebSocketConn>>>,
-    proxy: Option<String>,
+    opts: SpawnOptions,
 ) -> Result<BrowserHandle, String> {
     let (cmd_tx, mut cmd_rx) = mpsc::channel::<BrowserCommand>(64);
     let connected = Arc::new(RwLock::new(false));
+    // Idle watchdog input: bumped by the dispatch loop on every command.
+    let last_activity = Arc::new(Mutex::new(Instant::now()));
+
+    // Resource guard: every browser occupies a slot in the machine-wide tab
+    // lease (SHIRABE_MAX_TABS, default 3). Denied unless the caller explicitly
+    // overrides the cap.
+    let lease = TabLease::acquire(opts.tab_override)?;
 
     let exe = resolve_executable_blocking().await?;
     let port = pick_free_port().ok_or_else(|| "no free port for devtools".to_string())?;
@@ -695,7 +803,7 @@ pub(super) async fn spawn_browser(
             args.push("--no-zygote".to_string());
             args.push("--single-process".to_string());
         }
-        if let Some(ref p) = proxy {
+        if let Some(ref p) = opts.proxy {
             args.push(format!("--proxy-server={p}"));
         }
         args.push(base_url.clone());
@@ -742,6 +850,10 @@ pub(super) async fn spawn_browser(
     let error_buf = errors;
     let network_buf = network;
     let ws_buf = websockets;
+    // On a disconnect the reader signals the dispatch loop to exit so Chrome
+    // is reaped immediately (it crashed, was killed, or was told to shut
+    // down) — not just when the last BrowserHandle is dropped.
+    let shutdown_tx = cmd_tx.clone();
     tokio::spawn(async move {
         while let Some(msg) = stream.next().await {
             let text = match msg {
@@ -994,9 +1106,9 @@ pub(super) async fn spawn_browser(
         }
         *conn_reader.write().await = false;
         // Chrome's WebSocket closed — it crashed or was killed.
-        // The dispatch loop holds the Child; when cmd_rx drops (all
-        // BrowserHandles gone), kill_on_drop will reap it. But if
-        // handles are still alive, we need to signal shutdown.
+        // Signal the dispatch loop to exit and reap the child; a stale
+        // BrowserHandle then reports disconnected and is lazily restarted.
+        let _ = shutdown_tx.send(BrowserCommand::Shutdown).await;
         tracing::warn!("Chrome WebSocket disconnected — browser lost");
     });
 
@@ -1035,25 +1147,131 @@ pub(super) async fn spawn_browser(
         )
         .await;
 
+    // Performance locks: throttle requestAnimationFrame to the fps cap on
+    // every future document AND on the already-loaded page.
+    let locks_enabled = perf_locks_enabled();
+    let fps = fps_cap();
+    if locks_enabled && fps > 0 {
+        let lock_js = perf_lock_js(fps);
+        let _ = client
+            .command(
+                "Page.addScriptToEvaluateOnNewDocument",
+                json!({ "source": lock_js.clone() }),
+            )
+            .await;
+        let _ = client.evaluate(&lock_js).await;
+        tracing::info!("Perf locks active: rAF capped at {fps} fps");
+    }
+
     *connected.write().await = true;
 
+    // Resource-guard watchdog: refreshes the tab-lease heartbeat every 2s,
+    // recycles the browser after the idle timeout, and force-crashes the tab
+    // when its JS heap exceeds the per-tab ceiling (default 150 MiB).
+    let idle_timeout = idle_recycle_timeout();
+    let mem_limit = tab_mem_limit_bytes();
+    let watch_lease = lease.clone();
+    let watch_activity = last_activity.clone();
+    let watch_client = client.clone();
+    let watch_tx = cmd_tx.clone();
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(Duration::from_secs(2)).await;
+            watch_lease.refresh();
+            if !idle_timeout.is_zero() && watch_activity.lock().await.elapsed() >= idle_timeout {
+                tracing::info!("Browser idle for {idle_timeout:?} — recycling");
+                let _ = watch_tx.send(BrowserCommand::Shutdown).await;
+                break;
+            }
+            if locks_enabled && mem_limit > 0.0 {
+                let used = watch_client
+                    .evaluate("performance.memory.usedJSHeapSize")
+                    .await
+                    .ok()
+                    .and_then(|v| v.as_f64())
+                    .unwrap_or(0.0);
+                if used > mem_limit {
+                    tracing::warn!(
+                        "Tab JS heap {:.1} MiB exceeds {:.0} MiB ceiling — crashing tab",
+                        used / 1048576.0,
+                        mem_limit / 1048576.0
+                    );
+                    let _ = watch_client.command("Page.crash", json!({})).await;
+                    break; // ws closes → reader reaps Chrome via Shutdown
+                }
+            }
+        }
+    });
+
     // Per-command dispatch loop. Holds the child so chrome is reaped when
-    // every BrowserHandle (and thus cmd_rx) is dropped.
+    // the loop exits (Shutdown / disconnect / all handles dropped).
     tokio::spawn(async move {
         let client = client;
         while let Some(cmd) = cmd_rx.recv().await {
+            *last_activity.lock().await = Instant::now();
+            if matches!(cmd, BrowserCommand::Shutdown) {
+                // Prefer a graceful `Browser.close` on the browser-level
+                // devtools socket: it makes the whole Chromium process tree
+                // exit, whereas killing only the main process orphans the
+                // renderer/gpu/network children on Windows. Falls back to
+                // kill_on_drop when Chrome is already unreachable.
+                let _ = tokio::time::timeout(Duration::from_secs(8), graceful_browser_close(port))
+                    .await;
+                break;
+            }
             let c = client.clone();
             tokio::spawn(async move {
                 dispatch_command(&c, cmd).await;
             });
         }
         drop(child); // kill_on_drop reaps chrome here.
+        drop(lease); // release the tab slot exactly when the browser dies.
     });
 
     Ok(BrowserHandle {
         tx: cmd_tx,
         connected,
     })
+}
+
+/// Ask Chrome to shut itself down cleanly via `Browser.close` on the
+/// browser-level devtools websocket (`/json/version`). Unlike killing the
+/// main process, this makes the entire Chromium tree — renderers, GPU,
+/// network service — exit, so recycling can't orphan child processes on
+/// Windows. No-op failure: callers fall back to `kill_on_drop`.
+async fn graceful_browser_close(port: u16) -> Result<(), String> {
+    let version_url = format!("http://127.0.0.1:{port}/json/version");
+    let mut builder = reqwest::Client::builder().timeout(Duration::from_secs(2));
+    if let Some(ref p) = crate::detect_proxy() {
+        if let Ok(proxy) = reqwest::Proxy::all(p) {
+            builder = builder.proxy(proxy);
+        }
+    }
+    let client = builder.build().map_err(|e| format!("http client: {e}"))?;
+    let v: Value = client
+        .get(&version_url)
+        .send()
+        .await
+        .map_err(|e| format!("json/version: {e}"))?
+        .json()
+        .await
+        .map_err(|e| format!("json/version parse: {e}"))?;
+    let ws_url = v
+        .get("webSocketDebuggerUrl")
+        .and_then(|u| u.as_str())
+        .ok_or_else(|| "no browser websocket url".to_string())?
+        .to_string();
+    let (mut ws, _) = tokio_tungstenite::connect_async(&ws_url)
+        .await
+        .map_err(|e| format!("browser ws connect: {e}"))?;
+    let _ = ws
+        .send(Message::Text(r#"{"id":1,"method":"Browser.close"}"#.into()))
+        .await;
+    // Chrome closes the socket as it shuts down; a short grace period covers
+    // both outcomes.
+    let _ = tokio::time::timeout(Duration::from_secs(3), ws.next()).await;
+    tracing::info!("Browser.close sent on :{port} — graceful shutdown");
+    Ok(())
 }
 
 async fn wait_for_devtools(port: u16) -> Result<String, String> {
@@ -1130,6 +1348,8 @@ async fn resolve_executable_blocking() -> Result<String, String> {
 
 async fn dispatch_command(client: &CdpClient, cmd: BrowserCommand) {
     match cmd {
+        // Intercepted by the dispatch loop before reaching dispatch_command.
+        BrowserCommand::Shutdown => {} // unreachable — keeps the match exhaustive
         BrowserCommand::Navigate {
             url,
             wait_for,
@@ -2133,8 +2353,15 @@ struct DebugState {
     rejections: Arc<RwLock<Vec<ErrorEntry>>>,
     network: Arc<RwLock<HashMap<String, NetworkResource>>>,
     websockets: Arc<RwLock<HashMap<String, WebSocketConn>>>,
-    browser: Option<Arc<BrowserHandle>>,
+    /// Live browser handle, or the slot it used to occupy. Replaced lazily by
+    /// [`ensure_browser`] after a recycle / crash, and by `/browser/restart`.
+    browser: Arc<RwLock<Option<Arc<BrowserHandle>>>>,
+    /// Reason the last spawn attempt failed (tab cap, missing backend, …).
+    spawn_error: Arc<RwLock<Option<String>>>,
+    /// Serialises spawn/close/restart so a lazy restart can't race a manual one.
+    browser_lock: Arc<tokio::sync::Mutex<()>>,
     browser_engine: String,
+    proxy: Option<String>,
 }
 
 impl DebugState {
@@ -2175,41 +2402,7 @@ pub async fn start_debug_server(cfg: DebugServerConfig, debug_port: u16) -> anyh
     let network = Arc::new(RwLock::new(HashMap::new()));
     let websockets = Arc::new(RwLock::new(HashMap::new()));
 
-    let (browser, browser_engine) = {
-        tracing::info!("Debug browser engine: chromium (headless CDP)");
-        match tokio::time::timeout(
-            Duration::from_secs(45),
-            spawn_browser(
-                base_url.clone(),
-                None,
-                console_log.clone(),
-                errors.clone(),
-                network.clone(),
-                websockets.clone(),
-                cfg.proxy.clone(),
-            ),
-        )
-        .await
-        {
-            Ok(Ok(b)) => (Some(Arc::new(b)), "chromium".to_string()),
-            Ok(Err(e)) => {
-                tracing::error!("[debug-browser] Failed: {e}");
-                (None, "none".to_string())
-            }
-            Err(_) => {
-                tracing::error!("[debug-browser] Timed out after 45s");
-                (None, "none".to_string())
-            }
-        }
-    };
-
-    let browser_engine = if browser.is_some() {
-        browser_engine
-    } else {
-        "none".into()
-    };
-
-    let state = DebugState {
+    let mut state = DebugState {
         dist_dir: cfg.dist_dir.clone(),
         package_name: cfg.package_name.clone(),
         dev_port,
@@ -2220,10 +2413,22 @@ pub async fn start_debug_server(cfg: DebugServerConfig, debug_port: u16) -> anyh
         rejections: Arc::new(RwLock::new(Vec::new())),
         network,
         websockets,
-        browser,
-        browser_engine,
+        browser: Arc::new(RwLock::new(None)),
+        spawn_error: Arc::new(RwLock::new(None)),
+        browser_lock: Arc::new(tokio::sync::Mutex::new(())),
+        browser_engine: "chromium".into(),
+        proxy: cfg.proxy.clone(),
         start_time: Instant::now(),
     };
+
+    // Boot the browser eagerly (subject to the tab cap); a failure is
+    // recorded and later retried lazily by ensure_browser.
+    tracing::info!("Debug browser engine: chromium (headless CDP)");
+    let handle = spawn_with_guard(&state, false).await;
+    *state.browser.write().await = handle;
+    if state.browser.read().await.is_none() {
+        state.browser_engine = "none".into();
+    }
 
     let addr = SocketAddr::from(([127, 0, 0, 1], debug_port));
     let app = Router::new()
@@ -2253,6 +2458,8 @@ pub async fn start_debug_server(cfg: DebugServerConfig, debug_port: u16) -> anyh
         .route("/performance", get(performance_handler))
         .route("/websocket", get(websocket_handler))
         .route("/source-map", post(source_map_handler))
+        .route("/browser/close", post(browser_close_handler))
+        .route("/browser/restart", post(browser_restart_handler))
         .layer(CompressionLayer::new())
         .layer(
             CorsLayer::new()
@@ -2276,6 +2483,154 @@ pub async fn start_debug_server(cfg: DebugServerConfig, debug_port: u16) -> anyh
     Ok(())
 }
 
+// ── browser lifecycle guard ────────────────────────────────────────────────
+
+/// Spawn a browser under the tab-cap lease, recording failures on `state`.
+/// Bounded to 45s like the boot path.
+async fn spawn_with_guard(state: &DebugState, tab_override: bool) -> Option<Arc<BrowserHandle>> {
+    let opts = SpawnOptions {
+        proxy: state.proxy.clone(),
+        tab_override,
+    };
+    match tokio::time::timeout(
+        Duration::from_secs(45),
+        spawn_browser(
+            state.base_url.clone(),
+            None,
+            state.console_log.clone(),
+            state.errors.clone(),
+            state.network.clone(),
+            state.websockets.clone(),
+            opts,
+        ),
+    )
+    .await
+    {
+        Ok(Ok(b)) => {
+            *state.spawn_error.write().await = None;
+            Some(Arc::new(b))
+        }
+        Ok(Err(e)) => {
+            tracing::error!("[debug-browser] Failed: {e}");
+            *state.spawn_error.write().await = Some(e);
+            None
+        }
+        Err(_) => {
+            tracing::error!("[debug-browser] Timed out after 45s");
+            *state.spawn_error.write().await =
+                Some("browser spawn timed out after 45s".to_string());
+            None
+        }
+    }
+}
+
+/// Return the live browser, lazily restarting it when it is missing or dead
+/// (idle recycle, memory crash, manual close, backend failure, …).
+async fn ensure_browser(state: &DebugState) -> Option<Arc<BrowserHandle>> {
+    let _guard = state.browser_lock.lock().await;
+    if let Some(b) = state.browser.read().await.as_ref() {
+        if b.is_connected().await {
+            return Some(b.clone());
+        }
+    }
+    // Dead or missing: drop the stale handle (releases its tab slot) and
+    // spawn a replacement under the lease.
+    state.browser.write().await.take();
+    let handle = spawn_with_guard(state, false).await;
+    *state.browser.write().await = handle.clone();
+    handle
+}
+
+/// The most recent spawn failure, or a generic message.
+async fn browser_error_text(state: &DebugState) -> String {
+    state
+        .spawn_error
+        .read()
+        .await
+        .clone()
+        .unwrap_or_else(|| "No browser available".to_string())
+}
+
+/// `503` response carrying the spawn failure (tab cap warnings included).
+async fn browser_unavailable<T: Serialize>(
+    state: &DebugState,
+) -> (StatusCode, ResponseJson<ApiResponse<T>>) {
+    (
+        StatusCode::SERVICE_UNAVAILABLE,
+        ResponseJson(ApiResponse::<T>::err(browser_error_text(state).await)),
+    )
+}
+
+/// `{cap, used, remaining}` — machine-wide tab slot state (see `lease`).
+fn tab_slots_json() -> serde_json::Value {
+    let (cap, used, remaining) = lease::snapshot();
+    serde_json::json!({ "cap": cap, "used": used, "remaining": remaining })
+}
+
+#[derive(Deserialize)]
+struct BrowserRestartRequest {
+    /// Bypass the tab cap (SHIRABE_MAX_TABS, default 3) for this spawn.
+    #[serde(default, rename = "override")]
+    r#override: bool,
+}
+
+/// POST /browser/close — kill Chrome and release its tab slot. The next
+/// browser command lazily restarts it.
+async fn browser_close_handler(State(state): State<DebugState>) -> impl IntoResponse {
+    let _guard = state.browser_lock.lock().await;
+    let br = state.browser.write().await.take();
+    let closed = br.is_some();
+    if let Some(b) = br {
+        b.shutdown().await;
+    }
+    ResponseJson(ApiResponse::ok(serde_json::json!({
+        "closed": closed,
+        "tabs": tab_slots_json(),
+    })))
+}
+
+/// POST /browser/restart — tear down the current browser (if any) and start a
+/// fresh one, optionally bypassing the tab cap.
+async fn browser_restart_handler(
+    State(state): State<DebugState>,
+    Json(req): Json<BrowserRestartRequest>,
+) -> impl IntoResponse {
+    let _guard = state.browser_lock.lock().await;
+    let old = state.browser.write().await.take();
+    if let Some(b) = old {
+        b.shutdown().await;
+    }
+    match spawn_with_guard(&state, req.r#override).await {
+        Some(h) => {
+            *state.browser.write().await = Some(h);
+            let (cap, used, _) = lease::snapshot();
+            let warning = if req.r#override && used > cap {
+                Some(format!(
+                    "tab cap exceeded ({used}/{cap}) via override — close some browsers when \
+                     done to stay within the limit"
+                ))
+            } else {
+                None
+            };
+            (
+                StatusCode::OK,
+                ResponseJson(ApiResponse::ok(serde_json::json!({
+                    "started": true,
+                    "tabs": tab_slots_json(),
+                    "warning": warning,
+                }))),
+            )
+        }
+        None => {
+            let msg = browser_error_text(&state).await;
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                ResponseJson(ApiResponse::<serde_json::Value>::err(msg)),
+            )
+        }
+    }
+}
+
 // ── HTTP handlers ─────────────────────────────────────────────────────────
 
 async fn health_handler(State(state): State<DebugState>) -> impl IntoResponse {
@@ -2288,25 +2643,32 @@ async fn health_handler(State(state): State<DebugState>) -> impl IntoResponse {
 }
 
 async fn info_handler(State(state): State<DebugState>) -> impl IntoResponse {
-    let br = match &state.browser {
-        Some(b) => b.clone(),
-        None => {
-            // No browser: report defaults honestly.
-            return ResponseJson(ApiResponse::ok(InfoResponse {
-                version: env!("CARGO_PKG_VERSION").to_string(),
-                api_version: DEBUG_API_VERSION.into(),
-                dev_port: state.dev_port,
-                debug_port: state.debug_port,
-                dist_dir: state.dist_dir.clone(),
-                package_name: state.package_name.clone(),
-                pid: std::process::id(),
-                started_at_iso: chrono::Utc::now().to_rfc3339(),
-                uptime_secs: state.uptime_secs(),
-                browser_connected: false,
-                browser_engine: state.browser_engine.clone(),
-                viewport: [DEFAULT_VIEWPORT_W, DEFAULT_VIEWPORT_H],
-            }));
-        }
+    let tabs_cap = lease::max_tabs();
+    let tabs_used = lease::used_slots();
+    let spawn_error = state.spawn_error.read().await.clone();
+    let br = state.browser.read().await.clone();
+    let no_browser = || {
+        ResponseJson(ApiResponse::ok(InfoResponse {
+            version: env!("CARGO_PKG_VERSION").to_string(),
+            api_version: DEBUG_API_VERSION.into(),
+            dev_port: state.dev_port,
+            debug_port: state.debug_port,
+            dist_dir: state.dist_dir.clone(),
+            package_name: state.package_name.clone(),
+            pid: std::process::id(),
+            started_at_iso: chrono::Utc::now().to_rfc3339(),
+            uptime_secs: state.uptime_secs(),
+            browser_connected: false,
+            browser_engine: state.browser_engine.clone(),
+            viewport: [DEFAULT_VIEWPORT_W, DEFAULT_VIEWPORT_H],
+            tabs_cap,
+            tabs_used,
+            browser_error: spawn_error.clone(),
+        }))
+    };
+    let Some(br) = br else {
+        // No browser: report defaults honestly.
+        return no_browser();
     };
     // Await the connection flag on the runtime instead of block_on-ing a tokio
     // lock on a worker thread (which can stall under contention).
@@ -2340,13 +2702,15 @@ async fn info_handler(State(state): State<DebugState>) -> impl IntoResponse {
         browser_connected: connected,
         browser_engine: state.browser_engine.clone(),
         viewport: live_viewport,
+        tabs_cap,
+        tabs_used,
+        browser_error: spawn_error,
     }))
 }
 
 async fn ready_handler(State(state): State<DebugState>) -> impl IntoResponse {
-    let br = match &state.browser {
-        Some(b) => b,
-        None => return svc_unavailable::<ReadyResponse>(),
+    let Some(br) = ensure_browser(&state).await else {
+        return browser_unavailable::<ReadyResponse>(&state).await;
     };
     let (tx, rx) = oneshot::channel();
     if br.send(BrowserCommand::IsReady { resp: tx }).await.is_err() {
@@ -2380,9 +2744,8 @@ async fn navigate_handler(
     State(state): State<DebugState>,
     Json(req): Json<NavigateRequest>,
 ) -> impl IntoResponse {
-    let br = match &state.browser {
-        Some(b) => b,
-        None => return svc_unavailable::<NavigateResponse>(),
+    let Some(br) = ensure_browser(&state).await else {
+        return browser_unavailable::<NavigateResponse>(&state).await;
     };
     // Treat absolute schemes as-is; only relative paths get resolved against
     // the app's dev-server base_url.
@@ -2414,9 +2777,8 @@ async fn history_step(
     state: &DebugState,
     back: bool,
 ) -> ResponseJson<ApiResponse<serde_json::Value>> {
-    let br = match &state.browser {
-        Some(b) => b,
-        None => return ResponseJson(ApiResponse::err("browser not connected")),
+    let Some(br) = ensure_browser(state).await else {
+        return ResponseJson(ApiResponse::err(browser_error_text(state).await));
     };
     let (tx, rx) = oneshot::channel();
     if br
@@ -2437,9 +2799,8 @@ async fn screenshot_handler(
     State(state): State<DebugState>,
     Json(params): Json<ScreenshotParams>,
 ) -> impl IntoResponse {
-    let br = match &state.browser {
-        Some(b) => b,
-        None => return svc_unavailable::<ScreenshotResponse>(),
+    let Some(br) = ensure_browser(&state).await else {
+        return browser_unavailable::<ScreenshotResponse>(&state).await;
     };
     let (tx, rx) = oneshot::channel();
     if br
@@ -2460,9 +2821,8 @@ async fn click_handler(
     State(state): State<DebugState>,
     Json(req): Json<ClickRequest>,
 ) -> (StatusCode, ResponseJson<ApiResponse<()>>) {
-    let br = match &state.browser {
-        Some(b) => b,
-        None => return svc_unavailable::<()>(),
+    let Some(br) = ensure_browser(&state).await else {
+        return browser_unavailable::<()>(&state).await;
     };
     let (tx, rx) = oneshot::channel();
     if br
@@ -2482,9 +2842,8 @@ async fn type_handler(
     State(state): State<DebugState>,
     Json(req): Json<TypeRequest>,
 ) -> (StatusCode, ResponseJson<ApiResponse<()>>) {
-    let br = match &state.browser {
-        Some(b) => b,
-        None => return svc_unavailable::<()>(),
+    let Some(br) = ensure_browser(&state).await else {
+        return browser_unavailable::<()>(&state).await;
     };
     let (tx, rx) = oneshot::channel();
     if br
@@ -2507,9 +2866,8 @@ async fn press_handler(
     State(state): State<DebugState>,
     Json(req): Json<PressRequest>,
 ) -> (StatusCode, ResponseJson<ApiResponse<()>>) {
-    let br = match &state.browser {
-        Some(b) => b,
-        None => return svc_unavailable::<()>(),
+    let Some(br) = ensure_browser(&state).await else {
+        return browser_unavailable::<()>(&state).await;
     };
     let (tx, rx) = oneshot::channel();
     if br
@@ -2529,9 +2887,8 @@ async fn scroll_handler(
     State(state): State<DebugState>,
     Json(req): Json<ScrollRequest>,
 ) -> (StatusCode, ResponseJson<ApiResponse<()>>) {
-    let br = match &state.browser {
-        Some(b) => b,
-        None => return svc_unavailable::<()>(),
+    let Some(br) = ensure_browser(&state).await else {
+        return browser_unavailable::<()>(&state).await;
     };
     let (tx, rx) = oneshot::channel();
     let (x, y) = match req.direction.as_deref() {
@@ -2560,9 +2917,8 @@ async fn evaluate_handler(
     State(state): State<DebugState>,
     Json(req): Json<EvaluateRequest>,
 ) -> impl IntoResponse {
-    let br = match &state.browser {
-        Some(b) => b,
-        None => return svc_unavailable::<EvaluateResponse>(),
+    let Some(br) = ensure_browser(&state).await else {
+        return browser_unavailable::<EvaluateResponse>(&state).await;
     };
     let (tx, rx) = oneshot::channel();
     if br
@@ -2604,9 +2960,8 @@ async fn wait_for_selector_handler(
     State(state): State<DebugState>,
     Json(req): Json<WaitForSelectorRequest>,
 ) -> impl IntoResponse {
-    let br = match &state.browser {
-        Some(b) => b,
-        None => return svc_unavailable::<WaitForSelectorResponse>(),
+    let Some(br) = ensure_browser(&state).await else {
+        return browser_unavailable::<WaitForSelectorResponse>(&state).await;
     };
 
     let start = std::time::Instant::now();
@@ -2700,9 +3055,8 @@ async fn dom_query_handler(
     State(state): State<DebugState>,
     Query(params): Query<DomQueryParams>,
 ) -> impl IntoResponse {
-    let br = match &state.browser {
-        Some(b) => b,
-        None => return svc_unavailable::<DomNodeResponse>(),
+    let Some(br) = ensure_browser(&state).await else {
+        return browser_unavailable::<DomNodeResponse>(&state).await;
     };
     let (tx, rx) = oneshot::channel();
     if br
@@ -2722,9 +3076,8 @@ async fn dom_query_handler(
 }
 
 async fn viewport_handler(State(state): State<DebugState>) -> impl IntoResponse {
-    let br = match &state.browser {
-        Some(b) => b,
-        None => return svc_unavailable::<ViewportResponse>(),
+    let Some(br) = ensure_browser(&state).await else {
+        return browser_unavailable::<ViewportResponse>(&state).await;
     };
     let (tx, rx) = oneshot::channel();
     if br
@@ -2741,9 +3094,8 @@ async fn resize_handler(
     State(state): State<DebugState>,
     Json(req): Json<ResizeRequest>,
 ) -> impl IntoResponse {
-    let br = match &state.browser {
-        Some(b) => b,
-        None => return svc_unavailable::<()>(),
+    let Some(br) = ensure_browser(&state).await else {
+        return browser_unavailable::<()>(&state).await;
     };
     let (w, h) = match req.preset.as_deref() {
         Some("mobile") => (375, 812),
@@ -2781,9 +3133,8 @@ async fn drag_handler(
     State(state): State<DebugState>,
     Json(req): Json<DragRequest>,
 ) -> (StatusCode, ResponseJson<ApiResponse<()>>) {
-    let br = match &state.browser {
-        Some(b) => b,
-        None => return svc_unavailable::<()>(),
+    let Some(br) = ensure_browser(&state).await else {
+        return browser_unavailable::<()>(&state).await;
     };
     let (tx, rx) = oneshot::channel();
     if br
@@ -2805,9 +3156,8 @@ async fn a11y_handler(
     State(state): State<DebugState>,
     Query(params): Query<A11yQueryParams>,
 ) -> impl IntoResponse {
-    let br = match &state.browser {
-        Some(b) => b,
-        None => return svc_unavailable::<Vec<A11yNode>>(),
+    let Some(br) = ensure_browser(&state).await else {
+        return browser_unavailable::<Vec<A11yNode>>(&state).await;
     };
     let (tx, rx) = oneshot::channel();
     if br
@@ -2868,7 +3218,9 @@ async fn execute_batch_op(
     state: &DebugState,
     op: BatchOperation,
 ) -> Result<serde_json::Value, String> {
-    let br = state.browser.as_ref().ok_or("No browser")?;
+    let Some(br) = ensure_browser(state).await else {
+        return Err(browser_error_text(state).await);
+    };
     match op {
         BatchOperation::Navigate { url, wait_for } => {
             let target = resolve_url(&state.base_url, &url);
@@ -3006,9 +3358,8 @@ async fn network_handler(State(state): State<DebugState>) -> impl IntoResponse {
 }
 
 async fn performance_handler(State(state): State<DebugState>) -> impl IntoResponse {
-    let br = match &state.browser {
-        Some(b) => b,
-        None => return svc_unavailable::<PerformanceMetrics>(),
+    let Some(br) = ensure_browser(&state).await else {
+        return browser_unavailable::<PerformanceMetrics>(&state).await;
     };
     let (tx, rx) = oneshot::channel();
     if br
@@ -3095,12 +3446,6 @@ fn parse_location(s: &str) -> (String, Option<u32>, Option<u32>) {
 
 // ── Helpers ───────────────────────────────────────────────────────────────
 
-fn svc_unavailable<T: Serialize>() -> (StatusCode, ResponseJson<ApiResponse<T>>) {
-    (
-        StatusCode::SERVICE_UNAVAILABLE,
-        ResponseJson(ApiResponse::<T>::err("No browser available")),
-    )
-}
 fn chan_closed<T: Serialize>() -> (StatusCode, ResponseJson<ApiResponse<T>>) {
     (
         StatusCode::SERVICE_UNAVAILABLE,
