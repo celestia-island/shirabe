@@ -57,6 +57,20 @@ curl -X POST http://localhost:3001/navigate \
 curl -X POST http://localhost:3001/screenshot -d '{}'
 ```
 
+### npx (无需 Rust 工具链)
+
+预编译的二进制文件已发布到 npm，因此你可以通过一条命令运行 `shirabe`——无需 `cargo build`，无需安装 Chrome：
+
+```bash
+npx @celestia-island/shirabe debug --port 3001
+```
+
+`@celestia-island/shirabe` 根包会自动通过 `optionalDependencies` + postinstall 选择器拉取正确的平台子包（`-linux-x64` / `-darwin-arm64` / `-win32-x64`）。如需固定版本：
+
+```bash
+npx @celestia-island/shirabe@0.1.0 debug --port 3001
+```
+
 ### 作为库使用
 
 ```rust
@@ -181,13 +195,11 @@ SHIRABE_SKIP_BROWSER_FETCH=1 cargo test --all-features
 
 SySL-1.0（Synthetic Source License）。详见 [LICENSE](https://sysl.celestia.world)。
 
-## MCP Server Deployment
+## MCP 服务器部署
 
-> (English section — translation pending)
+对于生产环境的 MCP 部署，请使用**自动重启包装器**，以便在更新期间保持服务器运行而不中断客户端会话。
 
-For production MCP deployments, use an **auto-restart wrapper** to keep the server alive across updates without interrupting the client session.
-
-### Recommended launcher
+### 推荐的启动器
 
 #!/bin/bash
 while true; do
@@ -195,8 +207,8 @@ while true; do
   sleep 0.2
 done
 
-### How it works
+### 工作原理
 
-1. The wrapper runs `shirabe mcp` in a `while true` loop.
-2. If the process exits, it restarts within 0.2 seconds.
-3. To update: `kill $(pgrep -f "shirabe mcp" | head -1)`
+1. 包装器在 `while true` 循环中运行 `shirabe mcp`。
+2. 如果进程退出，它会在 0.2 秒内重新启动。
+3. 要更新：`kill $(pgrep -f "shirabe mcp" | head -1)`
