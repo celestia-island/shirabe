@@ -176,7 +176,8 @@ impl Server {
         let mut probe_builder = reqwest::Client::builder().timeout(Duration::from_secs(2));
         if let Some(ref p) = crate::detect_proxy() {
             if let Ok(proxy) = reqwest::Proxy::all(p) {
-                probe_builder = probe_builder.proxy(proxy);
+                // loopback probe — never route through the env proxy.
+                probe_builder = probe_builder.proxy(proxy).no_proxy();
             }
         }
         let probe = probe_builder
@@ -653,7 +654,8 @@ pub async fn run() -> Result<()> {
         let mut probe_builder = reqwest::Client::builder().timeout(Duration::from_secs(2));
         if let Some(ref p) = detect_proxy() {
             if let Ok(proxy) = reqwest::Proxy::all(p) {
-                probe_builder = probe_builder.proxy(proxy);
+                // loopback probe — never route through the env proxy.
+                probe_builder = probe_builder.proxy(proxy).no_proxy();
             }
         }
         let probe = probe_builder.build().unwrap_or_default();
@@ -689,7 +691,8 @@ pub async fn run() -> Result<()> {
         .connect_timeout(Duration::from_secs(5));
     if let Some(ref p) = detect_proxy() {
         if let Ok(proxy) = reqwest::Proxy::all(p) {
-            client_builder = client_builder.proxy(proxy);
+            // loopback resources — never route through the env proxy.
+            client_builder = client_builder.proxy(proxy).no_proxy();
         }
     }
     let server = Server {

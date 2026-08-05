@@ -1283,7 +1283,9 @@ async fn wait_for_devtools(port: u16) -> Result<String, String> {
     let mut client_builder = reqwest::Client::builder().timeout(Duration::from_secs(2));
     if let Some(ref p) = crate::detect_proxy() {
         if let Ok(proxy) = reqwest::Proxy::all(p) {
-            client_builder = client_builder.proxy(proxy);
+            // DevTools endpoints live on loopback; a proxy env var (HTTP(S)_PROXY)
+            // must never intercept them — honor the standard NO_PROXY env list (set NO_PROXY=127.0.0.1,localhost to bypass).
+            client_builder = client_builder.proxy(proxy).no_proxy();
         }
     }
     let client = client_builder
