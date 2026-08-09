@@ -223,6 +223,17 @@ pub fn resolve() -> anyhow::Result<PathBuf> {
         }
     }
 
+    // 2b. Cache probe — a previously fetched (or build-time downloaded) build
+    // may already sit in the shared cache even when this binary was compiled
+    // without `auto-fetch` (or with a different HOME/XDG_CACHE_HOME). Resolve
+    // against the pinned version instead of forcing a re-download.
+    if let Some(plat) = Platform::detect() {
+        let cached = installed_path(Flavor::selected(), version(), plat);
+        if cached.exists() {
+            return Ok(cached);
+        }
+    }
+
     // 3. System Chrome on PATH.
     if let Some(p) = which_system_chrome() {
         return Ok(p);
