@@ -206,11 +206,15 @@ Context Protocol:
 shirabe mcp
 ```
 
-The server advertises thirteen tools — `browser_navigate`, `browser_navigate_back`,
-`browser_navigate_forward`, `browser_snapshot`, `browser_dom`, `browser_screenshot`,
-`browser_click`, `browser_type`, `browser_press_key`, `browser_evaluate`,
-`browser_console_messages`, `browser_resize`, `browser_close` — each proxying
-over loopback to the in-process CDP engine. One process is both the browser
+The server advertises fourteen browser tools — `browser_navigate`,
+`browser_navigate_back`, `browser_navigate_forward`, `browser_snapshot`,
+`browser_dom`, `browser_screenshot`, `browser_click`, `browser_type`,
+`browser_press_key`, `browser_evaluate`, `browser_console_messages`,
+`browser_resize`, `browser_close`, and `browser_analyze_screenshot` — plus
+`init`, each proxying over loopback to the in-process CDP engine.
+`browser_analyze_screenshot` additionally sends the capture to a vision model
+(see [Vision analysis](#vision-analysis)) and returns the review text in one
+call. One process is both the browser
 and the MCP server; when it exits, Chrome is killed. The `init` tool takes
 `resume` (keep a healthy browser) and `override` (exceed the tab cap) flags;
 `browser_close` releases the tab slot for other sessions. Wire it into an MCP
@@ -240,6 +244,24 @@ SHIRABE_SKIP_BROWSER_FETCH=1 cargo test --all-features
 ## License
 
 SySL-1.0 (Synthetic Source License). See [LICENSE](./LICENSE) or the [SySL website](https://sysl.celestia.world).
+
+## Vision analysis
+
+`browser_analyze_screenshot` asks a vision-capable model to review a
+screenshot (layout structure, rendering issues, CSS suggestions). Models are
+resolved from a `provider-registry` checkout — model TOMLs under
+`models/<provider>/<model>.toml`, endpoint configs under
+`entrypoint/<provider>/default.toml`:
+
+| Env | Default | Effect |
+|-----|---------|--------|
+| `SHIRABE_VISION_REGISTRY` | `./provider-registry` or `../provider-registry` | Explicit registry directory (must contain `models/` + `entrypoint/`). |
+| `SHIRABE_VISION_MODEL` | cheapest chat model with a key | Pin a model id; a typo is an error, never a fallback. |
+| `SHIRABE_VISION_API_KEY` | unset | Explicit deployment-wide key override. Without it only the provider's own env var (e.g. `XAI_API_KEY`) is used — a generic key is never sent to a different provider. |
+
+Only OpenAI-compatible chat endpoints (`protocol = "openai_chat_v1"`) are
+supported, and image/video-generation models (`max_output_tokens = 0`) are
+excluded from selection.
 
 ## MCP Server Deployment
 

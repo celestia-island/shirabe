@@ -8,7 +8,8 @@
 //! server.
 //!
 //! This is the shirabe half of what `tairitsu-mcp` shipped, but in-process
-//! rather than proxying to an external daemon.
+//! rather than proxying to an external daemon. The vision half (`browser_analyze_screenshot`)
+//! joined here too in the 2026-10-17 browser-backbone consolidation.
 //!
 //! # Usage
 //!
@@ -234,6 +235,28 @@ struct ScreenshotArgs {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+struct AnalyzeScreenshotArgs {
+    /// Analysis prompt; defaults to a layout/rendering/CSS review prompt.
+    prompt: Option<String>,
+    /// Vision model id from the provider registry (defaults to the cheapest
+    /// model with an available API key; SHIRABE_VISION_MODEL overrides too).
+    model: Option<String>,
+    /// Capture the full page instead of the viewport.
+    #[serde(default, rename = "fullPage")]
+    full_page: bool,
+}
+
+/// Default screenshot-review prompt (the tairitsu-mcp wording, kept so the
+/// consolidated tool answers the same questions the old one did).
+const DEFAULT_VISION_PROMPT: &str = "Analyze this screenshot of a web page. Describe:\n\
+1. Overall layout and visual structure\n\
+2. Any rendering issues (missing content, broken layout, color mismatches, \
+overlapping elements, unreadable text)\n\
+3. Specific problems with CSS styling\n\
+4. Suggestions for improvement\n\
+Be concise and specific. Reference CSS classes or element types where relevant.";
+
+#[derive(Debug, Deserialize, JsonSchema)]
 struct ClickArgs {
     target: String,
 }
@@ -422,6 +445,71 @@ impl Server {
                 .to_string();
             Err(McpError::internal_error(err, None))
         }
+    }
+
+    #[tool(
+        description = "Capture a screenshot and run a vision-model review of it (layout, rendering issues, CSS suggestions) — one call, no separate analyze step. Requires SHIRABE_VISION_REGISTRY (or ./provider-registry) and a provider API key."
+    )]
+    async fn browser_analyze_screenshot(
+        &self,
+        Parameters(args): Parameters<AnalyzeScreenshotArgs>,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, McpError> {
+        self.ensure_up().await?;
+
+        // 1. Capture (same shape as browser_screenshot: envelope
+        //    {ok, data:{data: base64, mime_type}}).
+        let v = self
+            .http_post("screenshot", json!({"full_page": args.full_page}))
+            .await?;
+        let raw = v
+            .pointer("/data/data")
+            .and_then(|d| d.as_str())
+            .or_else(|| v.pointer("/data").and_then(|d| d.as_str()))
+            .ok_or_else(|| {
+                McpError::internal_error("screenshot response carried no base64 data", None)
+            })?;
+        // Accept a legacy data-URL string without wrapping it twice.
+        let image_b64 = raw
+            .strip_prefix("data:")
+            .and_then(|s| s.split_once(','))
+            .map(|(_, b64)| b64.to_string())
+            .unwrap_or_else(|| raw.to_string());
+        let mime = v
+            .pointer("/data/mime_type")
+            .and_then(|m| m.as_str())
+            .unwrap_or("image/png")
+            .to_string();
+
+        // 2. Resolve the vision model from the provider registry.
+        let registry = crate::vision::find_registry().ok_or_else(|| {
+            McpError::internal_error(
+                "provider-registry not found — set SHIRABE_VISION_REGISTRY or run from a \
+                 directory containing provider-registry/",
+                None,
+            )
+        })?;
+        let models = crate::vision::load_vision_models(&registry);
+        if models.is_empty() {
+            return Err(McpError::internal_error(
+                format!(
+                    "no vision models found in {} — expected provider-registry models/ + entrypoint/",
+                    registry.display()
+                ),
+                None,
+            ));
+        }
+        let model = crate::vision::pick_model(&models, args.model.as_deref())
+            .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+
+        // 3. Analyze.
+        let prompt = args
+            .prompt
+            .unwrap_or_else(|| DEFAULT_VISION_PROMPT.to_string());
+        let text = crate::vision::analyze_image(model, &prompt, &image_b64, &mime)
+            .await
+            .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+        Ok(Self::tool_result(text))
     }
 
     #[tool(description = "Click an element by CSS selector or reference from snapshot")]
