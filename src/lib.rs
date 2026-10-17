@@ -36,6 +36,8 @@ mod lease;
 #[cfg(feature = "mcp")]
 pub mod mcp;
 pub mod resolver;
+#[cfg(feature = "mcp")]
+pub mod vision;
 
 pub use backend::{
     Backend, resolve as resolve_backend, resolve_executable as resolve_backend_executable,

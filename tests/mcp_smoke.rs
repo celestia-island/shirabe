@@ -127,6 +127,7 @@ fn mcp_server_lists_browser_tools() {
         "browser_console_messages",
         "browser_resize",
         "browser_close",
+        "browser_analyze_screenshot",
     ] {
         assert!(
             tools.iter().any(|t| t == expected),
