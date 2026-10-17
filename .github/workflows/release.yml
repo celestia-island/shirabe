@@ -35,7 +35,9 @@ jobs:
       - name: Build (release)
         env:
           SHIRABE_SKIP_BROWSER_FETCH: "1"
-        run: cargo build --release --locked --features foreign-engine --target ${{ matrix.target }}
+        # No `--locked`: Cargo.lock is gitignored (library convention), so a
+        # fresh checkout has none — `--locked` failed every release build.
+        run: cargo build --release --features foreign-engine --target ${{ matrix.target }}
 
       - name: Stage (unix)
         if: runner.os != 'Windows'
