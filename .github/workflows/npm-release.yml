@@ -3,8 +3,8 @@ name: npm Release
 # Publish the `shirabe` binary to npm as precompiled platform subpackages so
 # users can run it via `npx @celestia-island/shirabe` with no Rust toolchain.
 #
-# This pipeline is the npm counterpart to release.yml (which attaches the same
-# binaries to the GitHub Release). It runs in three phases:
+# This pipeline is the npm counterpart to release.yml (which attaches release
+# archives to the GitHub Release). It runs in two phases:
 #
 #   1. `build-subpackage` (matrix, one job per platform) — cross-compile the
 #      binary, stage it into a platform subpackage via celestia-devtools
@@ -15,6 +15,13 @@ name: npm Release
 #
 # The version is derived from the pushed tag (vX.Y.Z → X.Y.Z) and is shared by
 # the root package and every subpackage so they are released in lockstep.
+#
+# The Linux lane is static musl for both CPU classes, published under the
+# generic `-linux-x64` / `-linux-arm64` names: one artifact per CPU class with
+# no glibc floor, so Debian/Ubuntu/Alpine/distroless hosts all run the same
+# binary. Building on ubuntu-latest previously pinned a GLIBC 2.38/2.39 floor
+# that older hosts could not satisfy. The macOS binaries stay native and
+# Windows stays on MSVC.
 
 on:
   push:
@@ -37,12 +44,11 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { os: ubuntu-latest,  target: x86_64-unknown-linux-gnu,  suffix: -linux-x64 }
-          - { os: ubuntu-latest,  target: aarch64-unknown-linux-gnu, suffix: -linux-arm64 }
-          - { os: ubuntu-latest,  target: x86_64-unknown-linux-musl, suffix: -linux-x64-musl }
-          - { os: macos-latest,   target: aarch64-apple-darwin,      suffix: -darwin-arm64 }
-          - { os: macos-latest,       target: x86_64-apple-darwin,       suffix: -darwin-x64 }
-          - { os: windows-latest, target: x86_64-pc-windows-msvc,    suffix: -win32-x64 }
+          - { os: ubuntu-latest,  target: x86_64-unknown-linux-musl,  platform: x86_64-unknown-linux-gnu,  suffix: -linux-x64 }
+          - { os: ubuntu-latest,  target: aarch64-unknown-linux-musl, platform: aarch64-unknown-linux-gnu, suffix: -linux-arm64 }
+          - { os: macos-latest,   target: aarch64-apple-darwin,       platform: aarch64-apple-darwin,      suffix: -darwin-arm64 }
+          - { os: macos-latest,   target: x86_64-apple-darwin,        platform: x86_64-apple-darwin,       suffix: -darwin-x64 }
+          - { os: windows-latest, target: x86_64-pc-windows-msvc,     platform: x86_64-pc-windows-msvc,    suffix: -win32-x64 }
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
@@ -79,24 +85,25 @@ jobs:
           echo "version=$v" >> "$GITHUB_OUTPUT"
           echo "publishing $v"
 
-      # Offline-friendly: do not pull Chrome for Testing during a release build.
-      # Build with the mcp feature so `shirabe mcp` ships in the binary.
-      - name: Setup cross-compilation toolchains
+      # Static musl is the only Linux lane that does not pin a glibc floor:
+      # zig supplies the cross linker for both x86_64 and aarch64 musl.
+      - name: Install zig + cargo-zigbuild
         if: runner.os == 'Linux'
         shell: bash
         run: |
-          case "${{ matrix.target }}" in
-            aarch64-unknown-linux-gnu)
-              sudo apt-get update -qq && sudo apt-get install -y -qq gcc-aarch64-linux-gnu
-              echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc" >> "$GITHUB_ENV"
-              ;;
-            x86_64-unknown-linux-musl)
-              sudo apt-get update -qq && sudo apt-get install -y -qq musl-tools
-              echo "CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=x86_64-linux-musl-gcc" >> "$GITHUB_ENV"
-              ;;
-          esac
+          pip install ziglang
+          cargo install cargo-zigbuild --locked
+
+      # Offline-friendly: do not pull Chrome for Testing during a release build.
+      # Build with the mcp feature so `shirabe mcp` ships in the binary.
+      - name: Build (release, static musl)
+        if: runner.os == 'Linux'
+        env:
+          SHIRABE_SKIP_BROWSER_FETCH: "1"
+        run: cargo zigbuild --release --features mcp --target ${{ matrix.target }}
 
       - name: Build (release)
+        if: runner.os != 'Linux'
         env:
           SHIRABE_SKIP_BROWSER_FETCH: "1"
         run: cargo build --release --features mcp --target ${{ matrix.target }}
@@ -108,11 +115,14 @@ jobs:
         run: |
           bin="target/${{ matrix.target }}/release/shirabe"
           [ "${{ matrix.target }}" = "x86_64-pc-windows-msvc" ] && bin="${bin}.exe"
+          # The Linux binary is built for musl but published under the generic
+          # platform name: one static artifact per CPU class, no -musl twin and
+          # no glibc variant. `platform` only selects the os/cpu/suffix mapping.
           celestia-devtools npm-dist \
             --name shirabe \
             --version "${{ steps.ver.outputs.version }}" \
             --binary "$bin" \
-            --rust-target "${{ matrix.target }}" \
+            --rust-target "${{ matrix.platform }}" \
             --out-dir dist \
             --description "Headless browser automation — CDP engine + HTTP debug API" \
             --repository "https://github.com/celestia-island/shirabe" \
@@ -170,13 +180,13 @@ jobs:
           echo "version=$v" >> "$GITHUB_OUTPUT"
 
       # No binary here — this only (re)assembles the root package manifest
-      # whose optionalDependencies enumerate the three subpackages already
+      # whose optionalDependencies enumerate the five subpackages already
       # published by build-subpackage. We pre-create those subpackage dirs as
-      # empty stubs purely so npm-dist's discovery sees all three platforms;
+      # empty stubs purely so npm-dist's discovery sees all five platforms;
       # the real bytes ship in the subpackages published in phase 1.
       - name: Assemble root package
         run: |
-          for sfx in -linux-x64 -linux-arm64 -linux-x64-musl -darwin-arm64 -darwin-x64 -win32-x64; do
+          for sfx in -linux-x64 -linux-arm64 -darwin-arm64 -darwin-x64 -win32-x64; do
             mkdir -p "dist/shirabe${sfx}"
           done
           celestia-devtools npm-dist \
