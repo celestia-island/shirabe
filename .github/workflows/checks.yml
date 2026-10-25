@@ -15,6 +15,7 @@ jobs:
     # hold no secrets.
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: [self-hosted, linux, x64, local]
+    timeout-minutes: 300
     env:
       # The browser backend fetch is exercised separately; keep the check job
       # offline-friendly.
