@@ -61,6 +61,7 @@ jobs:
     needs: guard
     name: Build + publish @celestia-island/shirabe${{ matrix.suffix }} to npm
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 300
     strategy:
       fail-fast: false
       matrix:
@@ -169,6 +170,7 @@ jobs:
     name: Publish root @celestia-island/shirabe to npm
     needs: [guard, build-subpackage]
     runs-on: ubuntu-latest
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@v7
 
