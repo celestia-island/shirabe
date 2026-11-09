@@ -782,43 +782,70 @@ pub(super) async fn spawn_browser(
     let lease = TabLease::acquire(opts.tab_override)?;
 
     let exe = resolve_executable_blocking().await?;
-    let port = pick_free_port().ok_or_else(|| "no free port for devtools".to_string())?;
 
-    let child: Child = {
-        // Try normal multi-process mode first for best stability.
-        // Single-process is a fallback for sandboxed envs where fork is blocked.
-        // Honour the SHIRABE_* namespace; the legacy TAIRITSU_SINGLE_PROCESS
-        // name is still accepted for backwards compatibility.
-        let use_single_process = std::env::var("SHIRABE_SINGLE_PROCESS").is_ok()
-            || std::env::var("TAIRITSU_SINGLE_PROCESS").is_ok();
-        let mut args = vec![
-            "--headless=new".to_string(),
-            "--no-sandbox".to_string(),
-            "--disable-gpu".to_string(),
-            "--no-first-run".to_string(),
-            format!("--remote-debugging-port={port}"),
-            format!("--window-size={DEFAULT_VIEWPORT_W},{DEFAULT_VIEWPORT_H}"),
-        ];
-        if use_single_process {
-            args.push("--no-zygote".to_string());
-            args.push("--single-process".to_string());
+    // pick_free_port hands Chromium a port number through a TOCTOU window
+    // (bind :0 → drop → Chrome rebinds); a sibling that grabs the port in
+    // between leaves devtools dead. Detect that (devtools never answers)
+    // and retry on a fresh port instead of failing the spawn outright.
+    // kill_on_drop reaps the lost-race child when the loop iteration's
+    // binding goes out of scope.
+    let (child, port, ws_url) = {
+        let mut last_err = None;
+        let mut outcome = None;
+        for _ in 0..3 {
+            let port = pick_free_port().ok_or_else(|| "no free port for devtools".to_string())?;
+            let child: Child = {
+                // Try normal multi-process mode first for best stability.
+                // Single-process is a fallback for sandboxed envs where fork is blocked.
+                // Honour the SHIRABE_* namespace; the legacy TAIRITSU_SINGLE_PROCESS
+                // name is still accepted for backwards compatibility.
+                let use_single_process = std::env::var("SHIRABE_SINGLE_PROCESS").is_ok()
+                    || std::env::var("TAIRITSU_SINGLE_PROCESS").is_ok();
+                let mut args = vec![
+                    "--headless=new".to_string(),
+                    "--no-sandbox".to_string(),
+                    "--disable-gpu".to_string(),
+                    "--no-first-run".to_string(),
+                    format!("--remote-debugging-port={port}"),
+                    format!("--window-size={DEFAULT_VIEWPORT_W},{DEFAULT_VIEWPORT_H}"),
+                ];
+                if use_single_process {
+                    args.push("--no-zygote".to_string());
+                    args.push("--single-process".to_string());
+                }
+                if let Some(ref p) = opts.proxy {
+                    args.push(format!("--proxy-server={p}"));
+                }
+                args.push(base_url.clone());
+                Command::new(&exe)
+                    .args(&args)
+                    .stdin(std::process::Stdio::null())
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .kill_on_drop(true)
+                    .spawn()
+                    .map_err(|e| format!("failed to launch chrome ({exe}): {e}"))?
+            };
+
+            // Wait for the devtools HTTP endpoint, then read the browser ws URL.
+            match wait_for_devtools(port).await {
+                Ok(url) => {
+                    outcome = Some((child, port, url));
+                    break;
+                }
+                Err(e) => {
+                    last_err = Some(e);
+                    continue; // drop reaps the child; a fresh port next round
+                }
+            }
         }
-        if let Some(ref p) = opts.proxy {
-            args.push(format!("--proxy-server={p}"));
-        }
-        args.push(base_url.clone());
-        Command::new(&exe)
-            .args(&args)
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .kill_on_drop(true)
-            .spawn()
-            .map_err(|e| format!("failed to launch chrome ({exe}): {e}"))?
+        outcome.ok_or_else(|| {
+            format!(
+                "devtools never answered on 3 fresh ports — last error: {}",
+                last_err.unwrap_or_else(|| "unknown".into())
+            )
+        })?
     };
-
-    // Wait for the devtools HTTP endpoint, then read the browser ws URL.
-    let ws_url = wait_for_devtools(port).await?;
 
     let (ws, _resp) = tokio_tungstenite::connect_async(&ws_url)
         .await
