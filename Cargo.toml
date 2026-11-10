@@ -64,7 +64,7 @@ tracing = "^0.1"
 tracing-subscriber = { version = "^0.3", features = ["env-filter"] }
 zip = { version = "^8", optional = true }
 # Vision analysis (MCP `browser_analyze_screenshot`): provider-registry TOML parsing.
-toml = { version = "^0", optional = true }
+toml = { version = "^0.9", optional = true }
 [dev-dependencies]
 
 serial_test = "^4"
