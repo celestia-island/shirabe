@@ -14,19 +14,27 @@
 //! marker records the digest it would require *now*. A tree without a matching
 //! marker (pre-marker cache, CI-restored cache, cached Docker layer) is never
 //! trusted on the strength of "it is already on disk": the tree is not re-hashed
-//! but replaced by a fresh verified install.
+//! but replaced by a fresh verified install. The marker contract itself lives in
+//! `src/chrome_cache.rs`, compiled here *and* by the library, so this build gate
+//! and the runtime resolver cannot drift apart.
 //!
 //! KEEP IN SYNC with `src/lib.rs` (version, URL scheme, cache layout).
 
 use std::path::{Path, PathBuf};
 
-const CHROME_VERSION: &str = "150.0.7871.46";
-const DEFAULT_MIRROR: &str = "https://storage.googleapis.com/chrome-for-testing-public";
+/// The cache trust contract, compiled from the same source file the library
+/// uses. A build script is its own compilation unit (no `use crate::…`), so the
+/// file is mounted here as a module of its own instead of being copied: one
+/// file, two consumers, nothing to drift.
+#[path = "src/chrome_cache.rs"]
+mod chrome_cache;
 
-/// Install-time marker inside a cache entry: it holds the (lowercase hex) digest
-/// the extracted tree was verified against, and is the only thing that makes a
-/// later build trust the tree without re-downloading it.
-const MARKER_FILE: &str = ".shirabe-verified";
+use crate::chrome_cache::{
+    CHROME_VERSION_PINNED as CHROME_VERSION, MARKER_FILE, MarkerVerdict, pinned_sha256,
+    read_marker, record_marker,
+};
+
+const DEFAULT_MIRROR: &str = "https://storage.googleapis.com/chrome-for-testing-public";
 
 /// SHA-256 of the pinned Chrome-for-Testing archives, keyed by
 /// `(version, flavor, download id)`.
@@ -42,57 +50,6 @@ const MARKER_FILE: &str = ".shirabe-verified";
 /// archive listed below from `DEFAULT_MIRROR`, `sha256sum` it, and paste the
 /// digests here. A stale entry makes the build fail loudly on the first
 /// uncached download; that is deliberate, never ship an unverified browser.
-const CHROME_SHA256: &[(&str, &str, &str, &str)] = &[
-    (
-        CHROME_VERSION,
-        "shell",
-        "linux64",
-        "0395e5db8d1631d5ed879d4f05fec423425537018fa1d73a58b1ade13288f447",
-    ),
-    (
-        CHROME_VERSION,
-        "shell",
-        "mac-arm64",
-        "38d663dcf205c8fc210cde9238f4b7f55c5f3757ec89f325ce0ec53951a842e7",
-    ),
-    (
-        CHROME_VERSION,
-        "shell",
-        "mac-x64",
-        "50b42d8313d44dc38c696fc2851e8c7dd2fd95b3dd69e05134abdab143d813c5",
-    ),
-    (
-        CHROME_VERSION,
-        "shell",
-        "win64",
-        "b97b40bbad365db24c69c00d3150c9dfd10012d16eb5da82e1fb73984a7b7f88",
-    ),
-    (
-        CHROME_VERSION,
-        "full",
-        "linux64",
-        "ad115a7498a17f53f6ed0914458326c6516addc756224db14c32184a9b1ab078",
-    ),
-    (
-        CHROME_VERSION,
-        "full",
-        "mac-arm64",
-        "9b6c6fbbda6f2948c74425828bd18f0e59542fd2beb056697478c38a956d83cb",
-    ),
-    (
-        CHROME_VERSION,
-        "full",
-        "mac-x64",
-        "dc6280df5fa5cb1da96f7026a20d7622df921fa5ba03c07e95af4a8dde17b131",
-    ),
-    (
-        CHROME_VERSION,
-        "full",
-        "win64",
-        "2245f764e024897195bce1cf6ff16d60544351e4d1b68edb6956ea875ab8b929",
-    ),
-];
-
 /// Integrity failure — the bytes we got are not provably the bytes we pinned
 /// (including "no digest is pinned for this combination"). Unlike a transport
 /// error, this must abort the build: falling back would ship an unverified
@@ -107,15 +64,6 @@ impl std::fmt::Display for ChecksumError {
 }
 
 impl std::error::Error for ChecksumError {}
-
-/// Pinned digest for `(version, flavor, download id)`; `None` = not pinned.
-fn pinned_sha256(ver: &str, flavor: &str, id: &str) -> Option<&'static str> {
-    let ver = ver.trim();
-    CHROME_SHA256
-        .iter()
-        .find(|(v, f, i, _)| *v == ver && *f == flavor && *i == id)
-        .map(|(_, _, _, digest)| *digest)
-}
 
 /// The digest the downloaded body must match: `SHIRABE_CHROME_SHA256` (hex)
 /// when set — an explicit override — otherwise the pinned table. Refusing to
@@ -183,7 +131,7 @@ fn main() {
     // in that category).
     let verified_hit = if exec.exists() {
         match expected_sha256(&ver, flavor, id) {
-            Ok(expected) => match marker_verdict(flavor, &ver, id, &expected) {
+            Ok(expected) => match read_marker(&marker_path(flavor, &ver, id), &expected) {
                 MarkerVerdict::Verified => true,
                 MarkerVerdict::Untrusted(why) => {
                     eprintln!(
@@ -330,52 +278,11 @@ fn installed_executable(flavor: &str, ver: &str, id: &str) -> PathBuf {
 }
 
 /// `<cache>/<flavor>/<ver>/<id>/.shirabe-verified` — written by the install that
-/// populated this cache entry, read by every later build that finds it.
+/// populated this cache entry, read by every later build that finds it. (The
+/// name, the three-state verdict and both accessors live in
+/// `chrome_cache.rs`, shared with the runtime resolver.)
 fn marker_path(flavor: &str, ver: &str, id: &str) -> PathBuf {
     version_dir(flavor, ver, id).join(MARKER_FILE)
-}
-
-/// What the install-time marker says about a tree that is already on disk.
-#[derive(Debug, PartialEq, Eq)]
-enum MarkerVerdict {
-    /// The marker records exactly the digest a fresh install would be held to.
-    Verified,
-    /// Absent, unreadable, or recording some other digest — with the reason.
-    Untrusted(String),
-}
-
-/// Compare marker contents (`None` = absent) against the `expected` digest.
-///
-/// Deliberately pure — no filesystem, no env — so the three states (absent /
-/// recorded-something-else / match) are decision points that can be exercised
-/// without a network, an archive, or a real cache.
-fn classify_marker(marker: Option<&str>, expected: &str) -> MarkerVerdict {
-    let Some(marker) = marker else {
-        return MarkerVerdict::Untrusted(format!("no {MARKER_FILE} marker"));
-    };
-    let recorded = marker.trim();
-    if recorded.is_empty() {
-        return MarkerVerdict::Untrusted(format!("{MARKER_FILE} marker is empty"));
-    }
-    let expected = expected.trim();
-    if !recorded.eq_ignore_ascii_case(expected) {
-        return MarkerVerdict::Untrusted(format!(
-            "{MARKER_FILE} marker records {recorded}, expected {expected}"
-        ));
-    }
-    MarkerVerdict::Verified
-}
-
-/// Read the cache entry's marker and classify it. Any read failure other than
-/// "absent" is also "untrusted": a marker we cannot read is a marker we cannot
-/// use as evidence.
-fn marker_verdict(flavor: &str, ver: &str, id: &str, expected: &str) -> MarkerVerdict {
-    let path = marker_path(flavor, ver, id);
-    match std::fs::read_to_string(&path) {
-        Ok(contents) => classify_marker(Some(&contents), expected),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => classify_marker(None, expected),
-        Err(e) => MarkerVerdict::Untrusted(format!("{} is unreadable ({e})", path.display())),
-    }
 }
 
 fn archive_url(flavor: &str, ver: &str, id: &str) -> String {
@@ -437,16 +344,12 @@ fn download_inner(url: &str, expected: &str, tmp: &Path, dest: &Path) -> anyhow:
 
     // Record provenance *inside* the temp tree, so the marker is swapped into
     // the cache together with the bytes it vouches for: an interrupted install
-    // can never leave a marker over a tree it did not come from. Failing here is
-    // fatal on purpose — a tree nobody can vouch for would just be re-downloaded
-    // by the next build, so burning the download silently is the worse outcome.
-    let marker = tmp.join(MARKER_FILE);
-    // An archive is free to ship an entry with this name (a directory or a
-    // symlink would make the write below fail, or redirect it). Clear the path
-    // first so the install's own record is always the one that lands.
-    let _ = std::fs::remove_file(&marker);
-    let _ = std::fs::remove_dir_all(&marker);
-    std::fs::write(&marker, format!("{expected}\n"))
+    // can never leave a marker over a tree it did not come from. (The shared
+    // helper also clears an archive-shipped entry of the same name.) Failing
+    // here is fatal on purpose — a tree nobody can vouch for would just be
+    // re-downloaded by the next build, so burning the download silently is the
+    // worse outcome.
+    record_marker(tmp, expected)
         .map_err(|e| anyhow::anyhow!("failed to record {MARKER_FILE} in the cache entry: {e}"))?;
 
     // Swap into place. On unix `rename` atomically replaces an existing dest;

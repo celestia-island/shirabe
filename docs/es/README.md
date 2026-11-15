@@ -119,7 +119,7 @@ Controles de descarga (tanto en compilación como en ejecución):
 |---------------------|-----------|
 | `SHIRABE_CHROME_VERSION` | Sobrescribe la versión fijada de Chrome for Testing. |
 | `SHIRABE_CHROME_MIRROR` | Descarga desde un mirror en lugar de `storage.googleapis.com`. |
-| `SHIRABE_CHROME_SHA256` | Anulación obligatoria por defecto en build: build.rs fija el sha256 de cada archivo y aborta ante desajuste o falta; esta variable solo anula el valor fijado. En tiempo de ejecución sigue siendo opcional. |
+| `SHIRABE_CHROME_SHA256` | En tiempo de build la suma de verificación es obligatoria por defecto: build.rs fija el sha256 de cada archivo y aborta si no coincide o falta el pin. En tiempo de ejecución la misma tabla fijada gobierna la marca de confianza de la caché; una versión/combinación sin pin queda sin verificar, y un reinstalación fallida de un árbol sin aval cae en él con una advertencia en vez de fallar (apunta CHROME_PATH a un build de confianza para evitarlo). Esta variable solo anula el digest fijado. |
 | `SHIRABE_DOWNLOAD_PROXY` | Redirige la descarga a través de un proxy `http://` / `https://` / `socks5://`. |
 | `SHIRABE_DOWNLOAD_TIMEOUT_SECS` | Tiempo de espera por petición (por defecto 600). |
 | `SHIRABE_SKIP_BROWSER_FETCH` | Omite las descargas tanto en compilación como en ejecución. |

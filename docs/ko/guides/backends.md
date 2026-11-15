@@ -36,7 +36,7 @@ Chromium, Microsoft Edge — 를 단일 CDP 엔진으로 구동합니다. `SHIRA
 |-----|---------|
 | `SHIRABE_CHROME_VERSION` | 고정된 Chrome for Testing 버전을 재정의합니다. |
 | `SHIRABE_CHROME_MIRROR` | 기본 Google 호스트 대신 미러(예: GFW 친화적 미러)에서 다운로드합니다. |
-| `SHIRABE_CHROME_SHA256` | 기본 필수 체크섬 오버라이드: 빌드는 build.rs에서 모든 Chrome 아카이브의 sha256을 고정하고 불일치·누락 시 중단합니다. 이 변수는 고정 값을 덮어쓰는 용도로만 사용합니다. |
+| `SHIRABE_CHROME_SHA256` | 빌드 시 기본 필수: build.rs가 모든 아카이브의 sha256을 고정하고 불일치·누락 시 중단합니다. 런타임에서도 같은 고정 표가 캐시 신뢰 마커를 구동합니다. 고정되지 않은 버전/조합은 검증 없이 유지되고, 보증되지 않은 트리를 재설치하다 실패하면 오류 대신 경고와 함께 그 트리로 폴백합니다(회피하려면 CHROME_PATH를 신뢰할 수 있는 빌드로 지정). 이 변수는 고정 다이제스트만 덮어씁니다. |
 | `SHIRABE_DOWNLOAD_PROXY` | `http://`, `https://` 또는 `socks5://` 프록시를 통해 다운로드를 라우팅합니다. |
 | `SHIRABE_DOWNLOAD_TIMEOUT_SECS` | 요청별 타임아웃 (기본값 600). |
 | `SHIRABE_SKIP_BROWSER_FETCH` | 빌드 시와 런타임 시 다운로드를 모두 건너뜁니다. |

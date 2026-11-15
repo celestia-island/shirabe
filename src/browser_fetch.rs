@@ -25,13 +25,30 @@
 //! `SHIRABE_CHROME_SHA256` (optional integrity check, hex),
 //! `SHIRABE_SKIP_BROWSER_FETCH` (skips both build-time and runtime download),
 //! `CHROME_PATH` (explicit executable override).
+//!
+//! # Cache trust
+//!
+//! The cache is shared with `build.rs`, and so is the rule for reusing it: a
+//! tree is trusted only while its install-time `.shirabe-verified` marker
+//! records the digest a *fresh* install would be held to right now (the contract
+//! lives in `crate::chrome_cache`, a private module that `build.rs` compiles
+//! too). An unverified tree — no marker, or one recording another digest — is
+//! treated exactly like a missing one, so it is downloaded again instead of
+//! being used on the strength of "it is already on disk".
+//!
+//! `SHIRABE_CHROME_SHA256` is the only digest this process can know at runtime
+//! (the pinned table lives in `build.rs`, a separate compilation unit). When it
+//! is unset there is nothing to compare against and nothing an install could
+//! honestly record, so the marker contract is inert and the pre-marker rule —
+//! the executable exists — still decides.
 
+use crate::chrome_cache::{MARKER_FILE, MarkerVerdict, read_marker};
 use std::path::{Path, PathBuf};
 
 /// Pinned Chrome for Testing version (Stable channel). Bump per release, like
 /// ort pins an ONNX Runtime version per crate release. Override at build time
 /// with `SHIRABE_CHROME_VERSION`.
-pub const CHROME_VERSION: &str = "150.0.7871.46";
+pub const CHROME_VERSION: &str = crate::chrome_cache::CHROME_VERSION_PINNED;
 
 const DEFAULT_MIRROR: &str = "https://storage.googleapis.com/chrome-for-testing-public";
 
@@ -48,6 +65,16 @@ impl Flavor {
     /// Shell by default; `Full` when the `full` cargo feature is enabled.
     pub fn selected() -> Self {
         Flavor::Shell
+    }
+
+    /// The pin-table / archive key for this flavor ("shell" | "full"),
+    /// available regardless of the `runtime-fetch` feature so the cache
+    /// contract can be evaluated on every build shape.
+    pub fn download_id(&self) -> &'static str {
+        match self {
+            Flavor::Shell => "shell",
+            Flavor::Full => "full",
+        }
     }
 
     /// Archive stem without extension, e.g. `chrome-headless-shell-linux64`.
@@ -179,6 +206,84 @@ pub fn installed_path(flavor: Flavor, ver: &str, plat: Platform) -> PathBuf {
     version_dir(flavor, ver, plat).join(flavor.internal_relative(plat))
 }
 
+/// The digest a fresh install would be held to *now*, if this process knows one.
+///
+/// Only `SHIRABE_CHROME_SHA256` can supply it at runtime: the pinned digest
+/// table lives in `build.rs`, which is a separate compilation unit. `None` ⇒
+/// nothing to verify against, so neither the install nor the cache probe can
+/// apply the marker contract (and nothing installs a marker either) — see the
+/// module docs. Closing that gap means moving the pin table into
+/// `crate::chrome_cache` so both sides read one table.
+fn expected_sha256(flavor: Flavor, ver: &str, plat: Platform) -> Option<String> {
+    if let Some(overridden) = std::env::var("SHIRABE_CHROME_SHA256")
+        .ok()
+        .map(|s| s.trim().to_lowercase())
+        .filter(|s| !s.is_empty())
+    {
+        return Some(overridden);
+    }
+    // No override: fall back to the same pinned table the build gate uses.
+    // A version/combination the table does not pin yields `None`, which keeps
+    // the marker contract inert (the pre-marker "tree exists" rule).
+    crate::chrome_cache::pinned_sha256(ver, flavor.download_id(), plat.download_id())
+        .map(|digest| digest.to_string())
+}
+
+/// What the shared marker contract says about a cache entry that is already on
+/// disk, plus whether there is an executable to reuse at all.
+#[derive(Debug, PartialEq, Eq)]
+enum CacheEntryState {
+    /// Nothing is there: no executable to reuse, and nothing to warn about —
+    /// the common "not downloaded yet" case, which must stay quiet.
+    Absent,
+    /// The executable is there and the entry may be reused as-is.
+    Trusted,
+    /// The executable is there but must not be reused — with the reason.
+    Unverified(String),
+}
+
+/// The `resolve()` step-2 decision, factored out so the "reuse ONLY a
+/// marker-vouched tree" rule is testable without a live download: a tree the
+/// shared contract vouches for is returned; an unverified one is logged and
+/// refused (it must never be preferred over system Chrome or a fresh install);
+/// an absent one is simply not there.
+fn reusable_cached_tree(entry: &Path, cached: &Path, expected: Option<&str>) -> Option<PathBuf> {
+    match cache_entry_state(entry, cached, expected) {
+        CacheEntryState::Trusted => Some(cached.to_path_buf()),
+        CacheEntryState::Unverified(why) => {
+            log(&format!(
+                "cache entry {} is unverified ({why}); not reusing it",
+                entry.display()
+            ));
+            None
+        }
+        CacheEntryState::Absent => None,
+    }
+}
+
+/// Classify the cache entry rooted at `entry`, whose executable would be
+/// `installed`, against the digest a fresh install would be held to (`expected`;
+/// `None` = this process knows no digest).
+///
+/// Mirrors the build gate: with no digest there is nothing to compare and
+/// nothing an install could have recorded, so the marker contract is inert and
+/// the pre-marker rule — the executable exists — decides. With a digest, the
+/// entry is reusable only while its marker records exactly that digest; a tree
+/// that fails the check is downloaded again instead of being used, exactly like
+/// `build.rs` does.
+fn cache_entry_state(entry: &Path, installed: &Path, expected: Option<&str>) -> CacheEntryState {
+    if !installed.exists() {
+        return CacheEntryState::Absent;
+    }
+    let Some(expected) = expected else {
+        return CacheEntryState::Trusted;
+    };
+    match read_marker(&entry.join(MARKER_FILE), expected) {
+        MarkerVerdict::Verified => CacheEntryState::Trusted,
+        MarkerVerdict::Untrusted(why) => CacheEntryState::Unverified(why),
+    }
+}
+
 /// Download URL for the archive.
 pub fn archive_url(flavor: Flavor, ver: &str, plat: Platform) -> String {
     let raw = std::env::var("SHIRABE_CHROME_MIRROR").unwrap_or_else(|_| DEFAULT_MIRROR.to_string());
@@ -226,11 +331,17 @@ pub fn resolve() -> anyhow::Result<PathBuf> {
     // 2b. Cache probe — a previously fetched (or build-time downloaded) build
     // may already sit in the shared cache even when this binary was compiled
     // without `auto-fetch` (or with a different HOME/XDG_CACHE_HOME). Resolve
-    // against the pinned version instead of forcing a re-download.
+    // against the pinned version instead of forcing a re-download, but only for
+    // a tree the shared marker contract vouches for: an unverified one is
+    // handled like a missing one, so it is never preferred over system Chrome.
     if let Some(plat) = Platform::detect() {
-        let cached = installed_path(Flavor::selected(), version(), plat);
-        if cached.exists() {
-            return Ok(cached);
+        let flavor = Flavor::selected();
+        let ver = version();
+        let cached = installed_path(flavor, ver, plat);
+        let entry = version_dir(flavor, ver, plat);
+        let expected = expected_sha256(flavor, ver, plat);
+        if let Some(tree) = reusable_cached_tree(&entry, &cached, expected.as_deref()) {
+            return Ok(tree);
         }
     }
 
@@ -281,10 +392,35 @@ pub fn ensure() -> anyhow::Result<PathBuf> {
     })?;
     let ver = version();
     let target = installed_path(flavor, ver, plat);
-    if target.exists() {
-        return Ok(target);
+    let entry = version_dir(flavor, ver, plat);
+    // Same rule as the probe in `resolve` and as the build gate: a tree on disk
+    // is reused only when its marker vouches for it. An unmarked or stale tree
+    // is replaced by a fresh verified install rather than trusted for existing.
+    let expected = expected_sha256(flavor, ver, plat);
+    match cache_entry_state(&entry, &target, expected.as_deref()) {
+        CacheEntryState::Trusted => return Ok(target),
+        CacheEntryState::Unverified(why) => log(&format!(
+            "cache entry {} is unverified ({why}); reinstalling",
+            entry.display()
+        )),
+        CacheEntryState::Absent => {}
     }
-    download_to_cache(flavor, ver, plat)?;
+    if let Err(e) = download_to_cache(flavor, ver, plat, expected.as_deref()) {
+        // Availability over strictness (deliberate, and only here): a tree that
+        // exists but cannot be vouched for is still better than a dead browser
+        // when the network or the mirror is down. The build gate stays strict;
+        // the runtime degrades LOUDLY and names the override.
+        if target.exists() {
+            log(&format!(
+                "reinstall failed ({e:#}); falling back to the existing unverified tree at {} \
+                 — set CHROME_PATH to a trusted build, or SHIRABE_CHROME_SHA256 when the pin is \
+                 stale, to silence this",
+                target.display()
+            ));
+            return Ok(target);
+        }
+        return Err(e);
+    }
     // Final integrity check: the expected binary must exist after extraction.
     if !target.exists() {
         anyhow::bail!(
@@ -297,7 +433,12 @@ pub fn ensure() -> anyhow::Result<PathBuf> {
 }
 
 #[cfg(feature = "runtime-fetch")]
-fn download_to_cache(flavor: Flavor, ver: &str, plat: Platform) -> anyhow::Result<()> {
+fn download_to_cache(
+    flavor: Flavor,
+    ver: &str,
+    plat: Platform,
+    expected: Option<&str>,
+) -> anyhow::Result<()> {
     let url = archive_url(flavor, ver, plat);
     // Extract to a sibling temp dir first, then swap into the version dir, so a
     // partial/interrupted extraction never poisons the cache.
@@ -317,7 +458,7 @@ fn download_to_cache(flavor: Flavor, ver: &str, plat: Platform) -> anyhow::Resul
     // Best-effort: reap stale temp dirs left by a crashed previous run.
     let _ = std::fs::remove_dir_all(&tmp);
 
-    let result = download_to_cache_inner(&url, &tmp, &dest, flavor);
+    let result = download_to_cache_inner(&url, &tmp, &dest, flavor, expected);
     if result.is_err() {
         let _ = std::fs::remove_dir_all(&tmp);
     }
@@ -330,15 +471,37 @@ fn download_to_cache_inner(
     tmp: &Path,
     dest: &Path,
     flavor: Flavor,
+    expected: Option<&str>,
 ) -> anyhow::Result<()> {
     std::fs::create_dir_all(tmp)?;
     log(&format!(
         "downloading {} (this happens once, then is cached)",
         url
     ));
-    let bytes = fetch_with_retry(url)?;
+    let bytes = fetch_with_retry(url, expected)?;
 
     extract_zip(&bytes, tmp)?;
+
+    // Record provenance *inside* the temp tree, so the marker is swapped into
+    // the cache together with the bytes it vouches for: an interrupted install
+    // can never leave a marker over a tree it did not come from. Only a digest
+    // this process actually verified against is worth recording; with none, the
+    // install stays unmarked, exactly as before the marker existed.
+    if let Some(expected) = expected {
+        if let Err(e) = crate::chrome_cache::record_marker(tmp, expected) {
+            // Not fatal, unlike the build gate: the bytes below are the bytes we
+            // just verified, so the browser this call hands back is sound. The
+            // marker only decides whether a *later* build or run may reuse the
+            // tree without downloading it again, and an absent marker fails
+            // closed (a re-download). Aborting would trade a working install for
+            // an error and re-download anyway.
+            log(&format!(
+                "could not record {MARKER_FILE} in {}: {e}; \
+                 the next build will download this tree again",
+                tmp.display()
+            ));
+        }
+    }
 
     // Swap into place. On unix `rename` atomically replaces an existing dest;
     // on Windows rename fails if dest exists, so remove-then-rename there.
@@ -355,14 +518,18 @@ fn download_to_cache_inner(
     Ok(())
 }
 
-/// Fetch `url` with up to 3 attempts (exponential backoff), then optionally
-/// verify the SHA-256 when `SHIRABE_CHROME_SHA256` (hex) is set.
+/// Fetch `url` with up to 3 attempts (exponential backoff), then verify the body
+/// against `expected` when this process knows a digest (`SHIRABE_CHROME_SHA256`).
+///
+/// The digest is threaded through instead of re-read at verify time, so the
+/// value that is checked is the very value the install records in the cache
+/// marker — one digest per install, never two.
 ///
 /// Mirrors build.rs: honours `SHIRABE_DOWNLOAD_PROXY` (route the download
 /// through an http/https/socks proxy) and `SHIRABE_DOWNLOAD_TIMEOUT_SECS`
 /// (default 600) so first-use downloads behind a forward proxy can egress.
 #[cfg(feature = "runtime-fetch")]
-fn fetch_with_retry(url: &str) -> anyhow::Result<Vec<u8>> {
+fn fetch_with_retry(url: &str, expected: Option<&str>) -> anyhow::Result<Vec<u8>> {
     install_ring_provider();
     let timeout = std::env::var("SHIRABE_DOWNLOAD_TIMEOUT_SECS")
         .ok()
@@ -396,7 +563,7 @@ fn fetch_with_retry(url: &str) -> anyhow::Result<Vec<u8>> {
                 let bytes = b.to_vec();
                 // Checksum mismatch is deterministic (same URL = same bytes) —
                 // fail immediately instead of wastefully re-downloading 90-300 MB.
-                return verify_checksum(&bytes)
+                return verify_checksum(&bytes, expected)
                     .map_err(|e| {
                         log(&format!("checksum failed (not retrying): {e}"));
                         e
@@ -415,15 +582,12 @@ fn fetch_with_retry(url: &str) -> anyhow::Result<Vec<u8>> {
     Err(last_err.unwrap_or_else(|| anyhow::anyhow!("download failed after 3 attempts")))
 }
 
-/// If `SHIRABE_CHROME_SHA256` (lowercase hex) is set, verify the body against
-/// it; otherwise no-op (the zip central-directory check + post-extract
+/// Verify the body against `expected` (lowercase hex) when this process pinned
+/// one; otherwise no-op (the zip central-directory check + post-extract
 /// existence check still catch most corruption).
 #[cfg(feature = "runtime-fetch")]
-fn verify_checksum(bytes: &[u8]) -> anyhow::Result<()> {
-    let Some(expected) = std::env::var("SHIRABE_CHROME_SHA256")
-        .ok()
-        .filter(|s| !s.is_empty())
-    else {
+fn verify_checksum(bytes: &[u8], expected: Option<&str>) -> anyhow::Result<()> {
+    let Some(expected) = expected else {
         return Ok(());
     };
     use sha2::{Digest, Sha256};
@@ -575,7 +739,8 @@ fn flavor_name(f: Flavor) -> &'static str {
     }
 }
 
-#[cfg(feature = "runtime-fetch")]
+/// One diagnostic line on stderr. Always compiled: the cache probe reports an
+/// unverified tree even in builds without `runtime-fetch`.
 fn log(msg: &str) {
     eprintln!("[shirabe] {msg}");
 }
@@ -658,23 +823,109 @@ mod tests {
         assert_eq!(p, PathBuf::from("etc/passwd"));
     }
 
+    /// Unique scratch directory under the system temp dir (no `tempfile` dep).
+    fn scratch_dir() -> PathBuf {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static NONCE: AtomicU64 = AtomicU64::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "shirabe-cache-entry-{}-{}",
+            std::process::id(),
+            NONCE.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(&dir).expect("create scratch dir");
+        dir
+    }
+
+    #[test]
+    fn cache_entry_trust_needs_a_matching_marker_when_a_digest_is_known() {
+        let entry = scratch_dir();
+        let installed = entry.join("chrome-headless-shell");
+        // Nothing installed yet: stay quiet, nothing to reuse.
+        assert_eq!(
+            cache_entry_state(&entry, &installed, Some("abc123")),
+            CacheEntryState::Absent
+        );
+
+        std::fs::write(&installed, b"not a real binary").unwrap();
+        // No digest known ⇒ the marker contract is inert (pre-marker rule).
+        assert_eq!(
+            cache_entry_state(&entry, &installed, None),
+            CacheEntryState::Trusted
+        );
+        // A known digest with no marker ⇒ a tree nobody can vouch for.
+        assert!(matches!(
+            cache_entry_state(&entry, &installed, Some("abc123")),
+            CacheEntryState::Unverified(_)
+        ));
+
+        crate::chrome_cache::record_marker(&entry, "abc123").expect("record marker");
+        assert_eq!(
+            cache_entry_state(&entry, &installed, Some("abc123")),
+            CacheEntryState::Trusted
+        );
+        // ... and a re-pin must not reuse the tree verified against the old one.
+        assert!(matches!(
+            cache_entry_state(&entry, &installed, Some("def456")),
+            CacheEntryState::Unverified(_)
+        ));
+
+        // A marker cannot conjure an executable into existence.
+        assert_eq!(
+            cache_entry_state(&entry, &entry.join("missing"), None),
+            CacheEntryState::Absent
+        );
+
+        std::fs::remove_dir_all(&entry).ok();
+    }
+
     #[cfg(feature = "runtime-fetch")]
     #[test]
-    fn checksum_passes_when_matching() {
+    fn checksum_verdicts_follow_the_pinned_digest() {
         use sha2::{Digest, Sha256};
         let data = b"hello";
         let mut h = Sha256::new();
         h.update(data);
         let hex: String = h.finalize().iter().map(|b| format!("{b:02x}")).collect();
-        // SAFETY: env mutation in a serial unit test; no concurrent reader.
-        unsafe {
-            std::env::set_var("SHIRABE_CHROME_SHA256", &hex);
-            assert!(verify_checksum(data).is_ok());
-            std::env::set_var("SHIRABE_CHROME_SHA256", "deadbeef");
-            assert!(verify_checksum(data).is_err());
-            std::env::remove_var("SHIRABE_CHROME_SHA256");
-        }
-        assert!(verify_checksum(data).is_ok());
+        // No digest pinned ⇒ nothing to check (pre-existing behaviour).
+        assert!(verify_checksum(data, None).is_ok());
+        assert!(verify_checksum(data, Some(hex.as_str())).is_ok());
+        assert!(verify_checksum(data, Some("deadbeef")).is_err());
+    }
+
+    #[test]
+    fn resolve_reuses_only_a_marker_vouched_tree() {
+        // R2 M7: hollowing the `Trusted => reuse` arm used to keep every gate
+        // green. This pins the resolve-time rule itself.
+        let dir = std::env::temp_dir().join(format!("shirabe-reuse-{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        let entry = dir.join("entry");
+        let cached = entry.join("chrome");
+        std::fs::create_dir_all(&entry).unwrap();
+        std::fs::write(&cached, b"bin").unwrap();
+
+        // No digest: the contract is inert and the existing tree is reusable.
+        assert_eq!(
+            reusable_cached_tree(&entry, &cached, None),
+            Some(cached.clone())
+        );
+        // A digest with no marker: refused (this is the arm M7 hollowed).
+        let digest = "ab".repeat(32);
+        assert_eq!(reusable_cached_tree(&entry, &cached, Some(&digest)), None);
+        // Matching marker: reused.
+        std::fs::write(entry.join(MARKER_FILE), format!("{digest}\n")).unwrap();
+        assert_eq!(
+            reusable_cached_tree(&entry, &cached, Some(&digest)),
+            Some(cached.clone())
+        );
+        // A different pinned digest: still refused — it must not fall back to
+        // "the file exists".
+        let other = "cd".repeat(32);
+        assert_eq!(reusable_cached_tree(&entry, &cached, Some(&other)), None);
+        // Absent executable: nothing to reuse regardless of the marker.
+        std::fs::remove_file(&cached).unwrap();
+        assert_eq!(reusable_cached_tree(&entry, &cached, Some(&digest)), None);
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
