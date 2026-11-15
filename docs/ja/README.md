@@ -113,7 +113,7 @@ async fn main() -> anyhow::Result<()> {
 |-----|---------|
 | `SHIRABE_CHROME_VERSION` | ピン留めされた Chrome for Testing のバージョンを上書きします。 |
 | `SHIRABE_CHROME_MIRROR` | `storage.googleapis.com` の代わりにミラーからダウンロードします。 |
-| `SHIRABE_CHROME_SHA256` | ビルド時はデフォルト必須：build.rs が各アーカイブの sha256 を固定し、不一致・欠落時に中止。この変数は固定値の上書きのみ。実行時は従来どおり任意です。 |
+| `SHIRABE_CHROME_SHA256` | ビルド時は既定で必須：build.rs が各アーカイブの sha256 を固定し、不一致・欠落時に中止します。実行時も同じ固定表がキャッシュ信頼マーカーを駆動します。固定されていない版・組み合わせは未検証のままで、保証のないツリーの再インストールが失敗した場合はエラーにせず警告付きでそのツリーへ戻ります（回避するには CHROME_PATH を信頼できるビルドに向けてください）。この変数は固定ダイジェストを上書きするだけです。 |
 | `SHIRABE_DOWNLOAD_PROXY` | ダウンロードを `http://` / `https://` / `socks5://` プロキシ経由で行います。 |
 | `SHIRABE_DOWNLOAD_TIMEOUT_SECS` | リクエストごとのタイムアウト（デフォルト 600）。 |
 | `SHIRABE_SKIP_BROWSER_FETCH` | ビルド時および実行時のダウンロードを両方スキップします。 |

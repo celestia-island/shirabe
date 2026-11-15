@@ -34,7 +34,7 @@ Chrome、Chromium、Microsoft Edge。使用 `SHIRABE_BACKEND` 選擇：
 |-----|---------|
 | `SHIRABE_CHROME_VERSION` | 覆蓋固定的 Chrome for Testing 版本。 |
 | `SHIRABE_CHROME_MIRROR` | 從鏡像（例如防火牆友好的鏡像）下載，而不是預設的 Google 主機。 |
-| `SHIRABE_CHROME_SHA256` | 預設強制啟用的校驗和覆寫：建置在 build.rs 中固定每個 Chrome 封存檔的 sha256，不符或缺漏即中止；此變數僅用於覆寫固定值。 |
+| `SHIRABE_CHROME_SHA256` | 建置時預設強制：build.rs 固定每個封存檔的 sha256，不符或缺漏即中止。執行時同一張固定表驅動快取信任標記；未被固定的版本／組合維持不校驗，且無法佐證的樹重裝失敗時會帶警告回退至該樹而非報錯（將 CHROME_PATH 指向可信建置即可避免）。此變數僅覆寫固定 digest。 |
 | `SHIRABE_DOWNLOAD_PROXY` | 透過 `http://`、`https://` 或 `socks5://` 代理路由下載。 |
 | `SHIRABE_DOWNLOAD_TIMEOUT_SECS` | 每個請求的逾時時間（預設 600）。 |
 | `SHIRABE_SKIP_BROWSER_FETCH` | 跳過建置時和執行時的下載。 |

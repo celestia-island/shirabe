@@ -29,6 +29,9 @@
 pub mod backend;
 pub mod browser_fetch;
 pub mod bundle;
+/// The Chrome cache trust contract (`.shirabe-verified` marker), compiled by
+/// the build script as well as the library — see the module docs.
+mod chrome_cache;
 pub mod engine;
 #[cfg(feature = "foreign-engine")]
 pub mod ffi;

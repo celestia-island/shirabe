@@ -39,7 +39,7 @@ compilation (`build.rs`) et à l'exécution :
 |-----|---------|
 | `SHIRABE_CHROME_VERSION` | Remplace la version épinglée de Chrome for Testing. |
 | `SHIRABE_CHROME_MIRROR` | Télécharge depuis un miroir (par ex. compatible GFW) au lieu de l'hôte Google par défaut. |
-| `SHIRABE_CHROME_SHA256` | Remplacement de somme de contrôle obligatoire par défaut : le build épingle le sha256 de chaque archive Chrome dans build.rs et avorte en cas d'écart ou d'épingle manquante ; cette variable ne fait que remplacer la valeur épinglée. |
+| `SHIRABE_CHROME_SHA256` | À la compilation la somme de contrôle est obligatoire par défaut : build.rs épingle le sha256 de chaque archive et avorte en cas d'écart ou d'épingle manquante. À l'exécution, la même table épinglée pilote la marque de confiance du cache ; une version/combinaison non épinglée reste non vérifiée, et une réinstallation ratée d'une arborescence non attestée y retombe avec un avertissement au lieu d'échouer (pointez CHROME_PATH vers un build de confiance pour l'éviter). Cette variable ne remplace que le digest épinglé. |
 | `SHIRABE_DOWNLOAD_PROXY` | Achemine le téléchargement via un proxy `http://`, `https://` ou `socks5://`. |
 | `SHIRABE_DOWNLOAD_TIMEOUT_SECS` | Délai d'expiration par requête (par défaut 600). |
 | `SHIRABE_SKIP_BROWSER_FETCH` | Ignore les téléchargements à la compilation et à l'exécution. |

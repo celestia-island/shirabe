@@ -110,7 +110,7 @@ shirabe 按以下顺序进行解析：
 |----------|------|
 | `SHIRABE_CHROME_VERSION` | 覆盖锁定的 Chrome for Testing 版本。 |
 | `SHIRABE_CHROME_MIRROR` | 从镜像站而非 `storage.googleapis.com` 下载。 |
-| `SHIRABE_CHROME_SHA256` | 构建时默认强制：build.rs 固定每个归档的 sha256，不匹配或缺失即中止；此变量仅覆盖固定值。运行时仍为可选。 |
+| `SHIRABE_CHROME_SHA256` | 构建时默认强制：build.rs 固定每个归档的 sha256，不匹配或缺失即中止。运行时同一张固定表驱动缓存信任标记；未被固定的版本/组合保持不校验，且无法佐证的树重装失败时会带警告回落到该树而非报错（把 CHROME_PATH 指向可信构建即可避免）。此变量仅覆盖固定 digest。 |
 | `SHIRABE_DOWNLOAD_PROXY` | 通过 `http://` / `https://` / `socks5://` 代理路由下载。 |
 | `SHIRABE_DOWNLOAD_TIMEOUT_SECS` | 单次请求超时时间（默认 600 秒）。 |
 | `SHIRABE_SKIP_BROWSER_FETCH` | 跳过构建时和运行时的浏览器下载。 |
