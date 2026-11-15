@@ -36,7 +36,7 @@ Chrome و Chromium و Microsoft Edge — من خلال محرك CDP واحد. ا
 |-----|---------|
 | `SHIRABE_CHROME_VERSION` | تجاوز إصدار Chrome for Testing المثبت. |
 | `SHIRABE_CHROME_MIRROR` | التنزيل من مرآة (مثلاً مرآة صديقة لجدار الحماية العظيم) بدلاً من مضيف Google الافتراضي. |
-| `SHIRABE_CHROME_SHA256` | مجموع تدقيقي سداسي عشري اختياري؛ يتم التحقق من التنزيل مقابله. |
+| `SHIRABE_CHROME_SHA256` | تجاوز إلزامي افتراضيًا للمجموع التدقيقي: يثبّت البناء sha256 لكل أرشيف Chrome في build.rs ويُجهض عند عدم التطابق أو غياب التثبيت؛ هذا المتغير يتجاوز القيمة المثبتة فقط. |
 | `SHIRABE_DOWNLOAD_PROXY` | توجيه التنزيل عبر وكيل `http://` أو `https://` أو `socks5://`. |
 | `SHIRABE_DOWNLOAD_TIMEOUT_SECS` | مهلة لكل طلب (الافتراضي 600). |
 | `SHIRABE_SKIP_BROWSER_FETCH` | تخطي عمليات التنزيل في وقت البناء ووقت التشغيل. |

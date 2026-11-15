@@ -36,7 +36,7 @@ The fetch step honours these environment variables, both at build time
 |-----|---------|
 | `SHIRABE_CHROME_VERSION` | Override the pinned Chrome for Testing version. |
 | `SHIRABE_CHROME_MIRROR` | Download from a mirror (e.g. a GFW-friendly one) instead of the default Google host. |
-| `SHIRABE_CHROME_SHA256` | Optional hex checksum; the download is verified against it. |
+| `SHIRABE_CHROME_SHA256` | At build time the checksum is mandatory by default: build.rs pins every Chrome archive sha256 (CHROME_SHA256) and aborts on mismatch or missing pin; this env var only overrides the pinned value. At runtime it stays optional (verified only when set). |
 | `SHIRABE_DOWNLOAD_PROXY` | Route the download through an `http://`, `https://` or `socks5://` proxy. |
 | `SHIRABE_DOWNLOAD_TIMEOUT_SECS` | Per-request timeout (default 600). |
 | `SHIRABE_SKIP_BROWSER_FETCH` | Skip both build-time and runtime downloads. |

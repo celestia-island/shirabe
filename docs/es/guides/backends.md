@@ -38,7 +38,7 @@ compilación (`build.rs`) como en tiempo de ejecución:
 |-----|---------|
 | `SHIRABE_CHROME_VERSION` | Sobrescribe la versión fijada de Chrome for Testing. |
 | `SHIRABE_CHROME_MIRROR` | Descarga desde un espejo (p. ej., uno compatible con el GFW) en lugar del host predeterminado de Google. |
-| `SHIRABE_CHROME_SHA256` | Suma de verificación hexadecimal opcional; la descarga se verifica contra ella. |
+| `SHIRABE_CHROME_SHA256` | Anulación de suma de verificación obligatoria por defecto: el build fija el sha256 de cada archivo de Chrome en build.rs y aborta ante desajuste o falta de pin; esta variable solo anula el valor fijado. |
 | `SHIRABE_DOWNLOAD_PROXY` | Enruta la descarga a través de un proxy `http://`, `https://` o `socks5://`. |
 | `SHIRABE_DOWNLOAD_TIMEOUT_SECS` | Tiempo de espera por solicitud (predeterminado 600). |
 | `SHIRABE_SKIP_BROWSER_FETCH` | Omite las descargas tanto en tiempo de compilación como en tiempo de ejecución. |

@@ -112,7 +112,7 @@ async fn main() -> anyhow::Result<()> {
 |-----|---------|
 | `SHIRABE_CHROME_VERSION` | 고정된 Chrome for Testing 버전을 재정의합니다. |
 | `SHIRABE_CHROME_MIRROR` | `storage.googleapis.com` 대신 미러에서 다운로드합니다. |
-| `SHIRABE_CHROME_SHA256` | 다운로드 검증용 hex 체크섬 (선택 사항). |
+| `SHIRABE_CHROME_SHA256` | 빌드 시 기본 필수: build.rs가 모든 아카이브의 sha256을 고정하고 불일치·누락 시 중단. 이 변수는 고정 값 덮어쓰기 전용. 실행 시에는 기존처럼 선택적입니다. |
 | `SHIRABE_DOWNLOAD_PROXY` | `http://` / `https://` / `socks5://` 프록시로 다운로드를 경유합니다. |
 | `SHIRABE_DOWNLOAD_TIMEOUT_SECS` | 요청별 타임아웃 (기본값 600). |
 | `SHIRABE_SKIP_BROWSER_FETCH` | 빌드 시 및 런타임 다운로드를 모두 건너뜁니다. |
