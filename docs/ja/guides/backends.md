@@ -36,7 +36,7 @@ Chromium、Microsoft Edge — を単一のCDPエンジンで操作します。`S
 |-----|---------|
 | `SHIRABE_CHROME_VERSION` | 固定されたChrome for Testingのバージョンを上書きします。 |
 | `SHIRABE_CHROME_MIRROR` | デフォルトのGoogleホストではなく、ミラー（GFW対応のものなど）からダウンロードします。 |
-| `SHIRABE_CHROME_SHA256` | オプションの16進数チェックサム。ダウンロードはこれに対して検証されます。 |
+| `SHIRABE_CHROME_SHA256` | デフォルトで必須のチェックサムオーバーライド：ビルドは build.rs で各 Chrome アーカイブの sha256 を固定し、不一致・欠落時に中止します。この変数は固定値の上書きのみに使用します。 |
 | `SHIRABE_DOWNLOAD_PROXY` | `http://`、`https://`、または`socks5://`プロキシ経由でダウンロードをルーティングします。 |
 | `SHIRABE_DOWNLOAD_TIMEOUT_SECS` | リクエストごとのタイムアウト（デフォルト600）。 |
 | `SHIRABE_SKIP_BROWSER_FETCH` | ビルド時と実行時の両方のダウンロードをスキップします。 |

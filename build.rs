@@ -3,12 +3,126 @@
 //! cached across builds) and bakes the path into the library via
 //! `cargo:rustc-env=SHIRABE_BROWSER_PATH=...`.
 //!
+//! Every downloaded archive is checked against a SHA-256 pinned in
+//! [`CHROME_SHA256`] — the checksum is a build *gate*, not an opt-in. The
+//! `SHIRABE_CHROME_SHA256` env var only *overrides* the pinned digest, and an
+//! unverifiable download aborts the build instead of silently falling back.
+//!
 //! KEEP IN SYNC with `src/lib.rs` (version, URL scheme, cache layout).
 
 use std::path::{Path, PathBuf};
 
 const CHROME_VERSION: &str = "150.0.7871.46";
 const DEFAULT_MIRROR: &str = "https://storage.googleapis.com/chrome-for-testing-public";
+
+/// SHA-256 of the pinned Chrome-for-Testing archives, keyed by
+/// `(version, flavor, download id)`.
+///
+/// This table is the default integrity gate, so that an outdated, broken, or
+/// hostile mirror can never hand the build a different browser binary. There is
+/// no "trust the download" mode: a missing entry is a build failure, and
+/// `SHIRABE_CHROME_SHA256` only *overrides* the digest (local mirror, or a
+/// version bump done ahead of refreshing this table).
+///
+/// ⚠️ Bumping `CHROME_VERSION` — or changing which flavors / download ids are
+/// supported — REQUIRES refreshing this table in the same commit: fetch every
+/// archive listed below from `DEFAULT_MIRROR`, `sha256sum` it, and paste the
+/// digests here. A stale entry makes the build fail loudly on the first
+/// uncached download; that is deliberate, never ship an unverified browser.
+const CHROME_SHA256: &[(&str, &str, &str, &str)] = &[
+    (
+        CHROME_VERSION,
+        "shell",
+        "linux64",
+        "0395e5db8d1631d5ed879d4f05fec423425537018fa1d73a58b1ade13288f447",
+    ),
+    (
+        CHROME_VERSION,
+        "shell",
+        "mac-arm64",
+        "38d663dcf205c8fc210cde9238f4b7f55c5f3757ec89f325ce0ec53951a842e7",
+    ),
+    (
+        CHROME_VERSION,
+        "shell",
+        "mac-x64",
+        "50b42d8313d44dc38c696fc2851e8c7dd2fd95b3dd69e05134abdab143d813c5",
+    ),
+    (
+        CHROME_VERSION,
+        "shell",
+        "win64",
+        "b97b40bbad365db24c69c00d3150c9dfd10012d16eb5da82e1fb73984a7b7f88",
+    ),
+    (
+        CHROME_VERSION,
+        "full",
+        "linux64",
+        "ad115a7498a17f53f6ed0914458326c6516addc756224db14c32184a9b1ab078",
+    ),
+    (
+        CHROME_VERSION,
+        "full",
+        "mac-arm64",
+        "9b6c6fbbda6f2948c74425828bd18f0e59542fd2beb056697478c38a956d83cb",
+    ),
+    (
+        CHROME_VERSION,
+        "full",
+        "mac-x64",
+        "dc6280df5fa5cb1da96f7026a20d7622df921fa5ba03c07e95af4a8dde17b131",
+    ),
+    (
+        CHROME_VERSION,
+        "full",
+        "win64",
+        "2245f764e024897195bce1cf6ff16d60544351e4d1b68edb6956ea875ab8b929",
+    ),
+];
+
+/// Integrity failure — the bytes we got are not provably the bytes we pinned
+/// (including "no digest is pinned for this combination"). Unlike a transport
+/// error, this must abort the build: falling back would ship an unverified
+/// browser. `main` downcasts to this to tell the two apart.
+#[derive(Debug)]
+struct ChecksumError(String);
+
+impl std::fmt::Display for ChecksumError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for ChecksumError {}
+
+/// Pinned digest for `(version, flavor, download id)`; `None` = not pinned.
+fn pinned_sha256(ver: &str, flavor: &str, id: &str) -> Option<&'static str> {
+    let ver = ver.trim();
+    CHROME_SHA256
+        .iter()
+        .find(|(v, f, i, _)| *v == ver && *f == flavor && *i == id)
+        .map(|(_, _, _, digest)| *digest)
+}
+
+/// The digest the downloaded body must match: `SHIRABE_CHROME_SHA256` (hex)
+/// when set — an explicit override — otherwise the pinned table. Refusing to
+/// invent a default is the point: no digest ⇒ no download.
+fn expected_sha256(ver: &str, flavor: &str, id: &str) -> anyhow::Result<String> {
+    let overridden = std::env::var("SHIRABE_CHROME_SHA256")
+        .ok()
+        .map(|s| s.trim().to_lowercase())
+        .filter(|s| !s.is_empty());
+    if let Some(hex) = overridden {
+        return Ok(hex);
+    }
+    match pinned_sha256(ver, flavor, id) {
+        Some(hex) => Ok(hex.to_string()),
+        None => Err(anyhow::Error::new(ChecksumError(format!(
+            "no pinned sha256 for chrome {ver} ({flavor}/{id}): add the digest to \
+             CHROME_SHA256 in build.rs, or set SHIRABE_CHROME_SHA256"
+        )))),
+    }
+}
 
 fn main() {
     println!("cargo:rerun-if-env-changed=SHIRABE_CHROME_VERSION");
@@ -48,12 +162,28 @@ fn main() {
 
     let exec = installed_executable(flavor, &ver, id);
     let final_path = if exec.exists() {
+        // Cache hit: this tree was extracted from an archive that already passed
+        // the digest gate on the run that installed it (the extracted bytes are
+        // not re-hashed here — re-verify by clearing the cache entry).
         exec
     } else {
         match download(flavor, &ver, id) {
             Ok(p) => p,
+            // Integrity is a hard gate: bytes we cannot verify must never be
+            // silently replaced by "just use whatever browser is around".
+            Err(e) if e.downcast_ref::<ChecksumError>().is_some() => {
+                eprintln!("[shirabe] BUILD ABORTED: refusing an unverified Chrome download");
+                eprintln!("[shirabe]   {e}");
+                eprintln!(
+                    "[shirabe] fix the mirror/network, pin the expected digest with \
+                     SHIRABE_CHROME_SHA256, or set SHIRABE_SKIP_BROWSER_FETCH to build \
+                     without a build-time browser"
+                );
+                std::process::exit(1);
+            }
             Err(e) => {
-                // Non-fatal: fall back to runtime / system resolution.
+                // Non-fatal (transport only): fall back to runtime / system
+                // resolution. Integrity failures never reach this arm.
                 eprintln!(
                     "[shirabe] build-time download failed ({e}); \
                      falling back to runtime resolution"
@@ -172,6 +302,9 @@ fn install_ring_provider() {
 
 fn download(flavor: &str, ver: &str, id: &str) -> anyhow::Result<PathBuf> {
     let url = archive_url(flavor, ver, id);
+    // Resolve the expected digest before touching the network (and before the
+    // temp-dir bookkeeping): no digest ⇒ no download.
+    let expected = expected_sha256(ver, flavor, id)?;
     let target = installed_executable(flavor, ver, id);
     let dest = version_dir(flavor, ver, id);
     // Extract into a sibling temp dir, then swap into place, so a
@@ -184,7 +317,7 @@ fn download(flavor: &str, ver: &str, id: &str) -> anyhow::Result<PathBuf> {
     let tmp = parent.join(format!(".{id}-{}-{nonce}.tmp", std::process::id()));
     let _ = std::fs::remove_dir_all(&tmp);
 
-    let result = download_inner(&url, &tmp, &dest);
+    let result = download_inner(&url, &expected, &tmp, &dest);
     if result.is_err() {
         let _ = std::fs::remove_dir_all(&tmp);
         return result.map(|()| target);
@@ -201,10 +334,10 @@ fn download(flavor: &str, ver: &str, id: &str) -> anyhow::Result<PathBuf> {
     Ok(target)
 }
 
-fn download_inner(url: &str, tmp: &Path, dest: &Path) -> anyhow::Result<()> {
+fn download_inner(url: &str, expected: &str, tmp: &Path, dest: &Path) -> anyhow::Result<()> {
     std::fs::create_dir_all(tmp)?;
     eprintln!("[shirabe] downloading {url} (once, then cached)");
-    let bytes = fetch_with_retry(url)?;
+    let bytes = fetch_with_retry(url, expected)?;
 
     extract_zip(&bytes, tmp)?;
 
@@ -219,8 +352,8 @@ fn download_inner(url: &str, tmp: &Path, dest: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Fetch `url` with up to 3 attempts (exponential backoff), then optionally
-/// verify the SHA-256 when `SHIRABE_CHROME_SHA256` (hex) is set.
+/// Fetch `url` with up to 3 attempts (exponential backoff), then verify the body
+/// against `expected` (hex sha256) — always, not only when an env var is set.
 ///
 /// Honours two env knobs (besides `SHIRABE_CHROME_MIRROR`, read earlier when
 /// composing the URL):
@@ -228,7 +361,7 @@ fn download_inner(url: &str, tmp: &Path, dest: &Path) -> anyhow::Result<()> {
 ///   proxy, e.g. `http://127.0.0.1:7890` or `socks5://127.0.0.1:1080`. Useful
 ///   behind the GFW or in CI that can only egress through a forward proxy.
 /// - `SHIRABE_DOWNLOAD_TIMEOUT_SECS` — per-request timeout (default 600).
-fn fetch_with_retry(url: &str) -> anyhow::Result<Vec<u8>> {
+fn fetch_with_retry(url: &str, expected: &str) -> anyhow::Result<Vec<u8>> {
     install_ring_provider();
     let timeout = std::env::var("SHIRABE_DOWNLOAD_TIMEOUT_SECS")
         .ok()
@@ -262,9 +395,9 @@ fn fetch_with_retry(url: &str) -> anyhow::Result<Vec<u8>> {
             Ok(b) => {
                 let bytes = b.to_vec();
                 // Checksum mismatch is deterministic — fail fast, don't retry.
-                return verify_checksum(&bytes)
+                return verify_checksum(&bytes, expected)
                     .map_err(|e| {
-                        eprintln!("[shirabe] checksum failed (not retrying): {e}");
+                        eprintln!("[shirabe] checksum failed for {url} (not retrying): {e}");
                         e
                     })
                     .map(|()| bytes);
@@ -281,22 +414,19 @@ fn fetch_with_retry(url: &str) -> anyhow::Result<Vec<u8>> {
     Err(last_err.unwrap_or_else(|| anyhow::anyhow!("download failed after 3 attempts")))
 }
 
-/// If `SHIRABE_CHROME_SHA256` (lowercase hex) is set, verify the body against
-/// it; otherwise no-op.
-fn verify_checksum(bytes: &[u8]) -> anyhow::Result<()> {
-    let Some(expected) = std::env::var("SHIRABE_CHROME_SHA256")
-        .ok()
-        .filter(|s| !s.is_empty())
-    else {
-        return Ok(());
-    };
+/// Verify the body against `expected` (lowercase hex). A mismatch is an
+/// [`ChecksumError`], which `main` turns into a fatal build abort.
+fn verify_checksum(bytes: &[u8], expected: &str) -> anyhow::Result<()> {
     use sha2::{Digest, Sha256};
     let mut hasher = Sha256::new();
     hasher.update(bytes);
     let digest = hasher.finalize();
     let actual: String = digest.iter().map(|b| format!("{b:02x}")).collect();
-    if actual != expected.trim().to_lowercase() {
-        anyhow::bail!("checksum mismatch: expected {expected}, got {actual}");
+    let expected = expected.trim().to_lowercase();
+    if actual != expected {
+        return Err(anyhow::Error::new(ChecksumError(format!(
+            "checksum mismatch: expected {expected}, got {actual}"
+        ))));
     }
     eprintln!("[shirabe] checksum verified");
     Ok(())

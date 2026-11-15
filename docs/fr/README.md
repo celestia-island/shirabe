@@ -121,7 +121,7 @@ Paramètres de téléchargement (compilation et exécution) :
 |-----|---------|
 | `SHIRABE_CHROME_VERSION` | Remplace la version épinglée de Chrome for Testing. |
 | `SHIRABE_CHROME_MIRROR` | Télécharge depuis un miroir au lieu de `storage.googleapis.com`. |
-| `SHIRABE_CHROME_SHA256` | Somme de contrôle hexadécimale optionnelle pour vérifier le téléchargement. |
+| `SHIRABE_CHROME_SHA256` | Remplacement obligatoire par défaut à la build : build.rs épingle le sha256 de chaque archive et avorte en cas d'écart ou d'épingle manquante ; cette variable ne fait que remplacer la valeur épinglée. À l'exécution, reste optionnel. |
 | `SHIRABE_DOWNLOAD_PROXY` | Fait transiter le téléchargement via un proxy `http://` / `https://` / `socks5://`. |
 | `SHIRABE_DOWNLOAD_TIMEOUT_SECS` | Délai d'expiration par requête (par défaut 600). |
 | `SHIRABE_SKIP_BROWSER_FETCH` | Ignore les téléchargements à la compilation et à l'exécution. |

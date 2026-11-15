@@ -113,7 +113,7 @@ shirabe بهذا الترتيب:
 |---------|-------|
 | `SHIRABE_CHROME_VERSION` | تجاوز إصدار Chrome for Testing المُثبَّت. |
 | `SHIRABE_CHROME_MIRROR` | التحميل من مرآة بدلاً من `storage.googleapis.com`. |
-| `SHIRABE_CHROME_SHA256` | بصمة SHA256 سداسية عشرية اختيارية للتحقق من التحميل. |
+| `SHIRABE_CHROME_SHA256` | تجاوز إلزامي افتراضيًا للمجموع التدقيقي: يثبّت البناء (build.rs) sha256 لكل أرشيف ويُجهض عند عدم التطابق أو غياب التثبيت؛ هذا المتغير يتجاوز القيمة المثبتة فقط. عند التشغيل يظل اختياريًا. |
 | `SHIRABE_DOWNLOAD_PROXY` | توجيه التحميل عبر وكيل `http://` / `https://` / `socks5://`. |
 | `SHIRABE_DOWNLOAD_TIMEOUT_SECS` | مهلة لكل طلب (الافتراضي 600). |
 | `SHIRABE_SKIP_BROWSER_FETCH` | تخطّي التحميل في وقت البناء ووقت التشغيل معًا. |
