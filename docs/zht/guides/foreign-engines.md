@@ -7,10 +7,15 @@ Chromium 家族（Chrome / Chromium / Edge）透過 shirabe 自有的 CDP 引擎
 shirabe 是「薄 C 綁定包裝器」：它 dlopen 廠商庫，並通過泛型
 [`Engine`](https://shirabe.docs.celestia.world) trait 路由調用。
 
-```
-your app ── shirabe (CDP engine) ── Chrome / Chromium / Edge   (in-process)
-        └─ shirabe (FFI wrapper) ── libshirabe_engine_firefox ── Firefox core
-                                 └ libshirabe_engine_servo   ── Servo core
+```mermaid
+flowchart LR
+    APP["your app"] --- CDP["shirabe (CDP engine)"]
+    APP --- FFI["shirabe (FFI wrapper)"]
+    CDP --- CHROME["Chrome / Chromium / Edge (in-process)"]
+    FFI --- FFILIB["libshirabe_engine_firefox"]
+    FFILIB --- FIREFOX["Firefox core"]
+    FFI --- SERVOLIB["libshirabe_engine_servo"]
+    SERVOLIB --- SERVO["Servo core"]
 ```
 
 ## 啟用

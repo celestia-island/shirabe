@@ -8,10 +8,15 @@ C ABI ثابت وشحنه كمكتبة ديناميكية — وهو نفس ال
 يفتح المكتبة الديناميكية للمزوّد ويوجّه النداءات عبر trait عام هو
 [`Engine`](https://shirabe.docs.celestia.world).
 
-```
-your app ── shirabe (CDP engine) ── Chrome / Chromium / Edge   (in-process)
-        └─ shirabe (FFI wrapper) ── libshirabe_engine_firefox ── Firefox core
-                                 └ libshirabe_engine_servo   ── Servo core
+```mermaid
+flowchart LR
+    APP["your app"] --- CDP["shirabe (CDP engine)"]
+    APP --- FFI["shirabe (FFI wrapper)"]
+    CDP --- CHROME["Chrome / Chromium / Edge (in-process)"]
+    FFI --- FFILIB["libshirabe_engine_firefox"]
+    FFILIB --- FIREFOX["Firefox core"]
+    FFI --- SERVOLIB["libshirabe_engine_servo"]
+    SERVOLIB --- SERVO["Servo core"]
 ```
 
 ## التفعيل

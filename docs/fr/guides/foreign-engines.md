@@ -10,10 +10,15 @@ l'« enveloppe fine de liaison C » : il ouvre la bibliothèque du fournisseur v
 dlopen et achemine les appels via un trait générique
 [`Engine`](https://shirabe.docs.celestia.world).
 
-```
-your app ── shirabe (CDP engine) ── Chrome / Chromium / Edge   (in-process)
-        └─ shirabe (FFI wrapper) ── libshirabe_engine_firefox ── Firefox core
-                                 └ libshirabe_engine_servo   ── Servo core
+```mermaid
+flowchart LR
+    APP["your app"] --- CDP["shirabe (CDP engine)"]
+    APP --- FFI["shirabe (FFI wrapper)"]
+    CDP --- CHROME["Chrome / Chromium / Edge (in-process)"]
+    FFI --- FFILIB["libshirabe_engine_firefox"]
+    FFILIB --- FIREFOX["Firefox core"]
+    FFI --- SERVOLIB["libshirabe_engine_servo"]
+    SERVOLIB --- SERVO["Servo core"]
 ```
 
 ## Activation
